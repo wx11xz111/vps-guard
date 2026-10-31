@@ -38,3 +38,10 @@ coverage/
 .vscode/
 .DS_Store
 Thumbs.db
+.cache/
+.superpowers/
+.venv/
+/artifacts/
+/build-evidence/
+/toolchains/
+/release/
