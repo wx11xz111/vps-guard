@@ -6,13 +6,13 @@ umask 077
 for tool in curl sha256sum mktemp; do command -v "$tool" >/dev/null || { echo "缺少依赖: $tool" >&2; exit 1; }; done
 stage=$(mktemp -d "${TMPDIR:-/tmp}/vpsguard.XXXXXXXX")
 trap 'rm -rf -- "$stage"' EXIT
-base='https://raw.githubusercontent.com/wx11xz111/vps-guard/c31a985e6a18f273ad76a686476355fa4065f9a5'
+base='https://raw.githubusercontent.com/wx11xz111/vps-guard/351b3ea083f77ee1c974398034702fee36e90066'
 for file in server-guard.sh backends.sh selinux.sh install.sh; do
  curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --tlsv1.2 --connect-timeout 15 --max-time 120 --output "$stage/$file" "$base/$file"
 done
 (cd "$stage" && sha256sum --check --status <<'SUMS'
-09b8ae9b40866ee1182008a955a6b91c17a2b33513017fdcbb0c790ce1b3bfc8  server-guard.sh
-05da44a0549249cb3dfc0461d93ec2e4314eed9dcf9a2aa4144459053346e9b9  backends.sh
+c532d1a20e7d2a9dcafa94b8f74112b962a093b42ddeaa7f42481faf290a4f45  server-guard.sh
+a327b2246c45ef0929d634451d68a1000f2dc4543715b5e3184a71fc528d97d9  backends.sh
 873f5ba3b6c1a5d06a9bb0e8580ad7489225bc8c8e39b98fecd162b1ddddbe3d  selinux.sh
 90f707f3127e455d952b0fd28db8c3ba573c8d738f4ddc51dd375367931ef256  install.sh
 SUMS
