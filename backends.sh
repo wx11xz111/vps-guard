@@ -136,7 +136,7 @@ detect_backend() {
   if has nft; then nt=$(os nft list tables) || die 'cannot inspect nftables'; fi
   if has iptables-save; then ip=$(os iptables-save) || die 'cannot inspect iptables'; fi
   [[ -z $nt || -z $ip ]] || die 'ambiguous unmanaged nft/iptables; choose a single manager first'
-  if [[ -n $nt ]]; then BACKEND=nftables; elif [[ -n $ip ]]; then BACKEND=iptables; else die "no supported firewall manager. Menu 7/8 need no firewall. For port/SSH changes, allow current SSH port $SESSION_PORT/tcp in the cloud security group and UFW (Debian/Ubuntu) or firewalld (RHEL/Rocky/Alma) before enabling the manager; keep this SSH session and rescue-console access, then retry. / 未检测到受支持防火墙。菜单7/8无需防火墙；可用菜单15安装并启用防火墙。端口或SSH操作请先在云安全组和拟启用的UFW或firewalld中放行当前SSH端口 $SESSION_PORT/tcp，保留当前连接及救援控制台，再启用防火墙并重试"; fi
+  if [[ -n $nt ]]; then BACKEND=nftables; elif [[ -n $ip ]]; then BACKEND=iptables; else die "no supported firewall manager. Menu 7/8 need no firewall. For port/SSH changes, allow current SSH port $SESSION_PORT/tcp in the cloud security group and UFW (Debian/Ubuntu) or firewalld (RHEL/Rocky/Alma) before enabling the manager; keep this SSH session and rescue-console access, then retry. / 未检测到受支持防火墙。菜单7/8无需防火墙；可用菜单1安装并启用防火墙。端口或SSH操作请先在云安全组和拟启用的UFW或firewalld中放行当前SSH端口 $SESSION_PORT/tcp，保留当前连接及救援控制台，再启用防火墙并重试"; fi
  fi
 }
 iptables_shape() {

@@ -23,9 +23,9 @@ for distro in ubuntu rocky; do
  ok "$distro installs and protects all SSH ports before enabling"
 done
 setup_fixture
-printf '15\n确认\n0\n' | run menu > "$work/setup-menu"
+printf '1\n确认\n0\n' | run menu > "$work/setup-menu"
 grep -q '安装并启用防火墙' "$work/setup-menu"
-ok 'Menu 15 installs and enables the firewall'
+ok 'Menu 1 installs and enables the firewall'
 setup_fixture
 echo 1 > "$GUARD_TEST_ROOT/fixture/services/nftables.active"
 reject apply firewall-setup --apply

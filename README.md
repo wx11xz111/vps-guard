@@ -13,12 +13,14 @@ bash <(curl -fsSL https://raw.githubusercontent.com/wx11xz111/vps-guard/main/boo
 安装器校验固定版本的文件，再安装至 `/usr/local/lib/vpsmanager/server-guard`，并打开中文菜单。后续使用：
 
 ```bash
-sudo --preserve-env=SSH_CONNECTION vpsguard
+vps-guard
 ```
+
+可在任意目录调用；普通用户会提示 sudo 验证，并保留当前 SSH 会话信息。菜单按“防火墙与端口 → SSH 与防爆破 → 状态与维护”分组。已安装旧版时，重新执行一键安装命令即可更新。
 
 安装过程不修改防火墙或 SSH 配置。菜单中的变更需要预览及确认；启用 Fail2ban 不要求先启动防火墙。详细操作、依赖和回退说明见[操作手册](MANUAL.md)。
 
-如服务器尚未安装或启用防火墙，选择 **15 安装并启用防火墙**：Debian/Ubuntu 使用 UFW，RHEL/Rocky/Alma 使用 firewalld。脚本先识别和放行当前会话、配置及监听中的全部 SSH 端口，再启用并核对防火墙；已有其他管理器或不支持的规则会提前拒绝。业务端口需随后按需放行。
+如服务器尚未安装或启用防火墙，选择 **1 安装并启用防火墙**：Debian/Ubuntu 使用 UFW，RHEL/Rocky/Alma 使用 firewalld。脚本先识别和放行当前会话、配置及监听中的全部 SSH 端口，再启用并核对防火墙；已有其他管理器或不支持的规则会提前拒绝。业务端口需随后按需放行。
 
 ## 验证状态
 

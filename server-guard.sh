@@ -400,34 +400,34 @@ menu() {
  if [[ ! -t 0 && -z $ADAPTER ]]; then die 'menu requires an interactive terminal / 菜单需要交互终端'; fi
  while :; do
   if [[ $LANGUAGE == en ]]; then
-   printf '\n=== Server Guard ===\n1 Ports  2 Add port  3 Edit port  4 Delete port  5 SSH port\n6 Status  7 Enable Fail2ban  8 Disable Fail2ban  9 Disable firewall\n10 Clear owned ports  11 Clear all rules  12 Restore firewall\n13 Confirm transaction  14 Roll back transaction\n15 Install and enable firewall  0 Exit\nChoose: '
+   printf '\n=== Server Guard ===\n1 Install and enable firewall\n2 Ports  3 Add port  4 Edit port  5 Delete port\n6 SSH port  7 Enable Fail2ban  8 Disable Fail2ban\n9 Status\n10 Disable firewall  11 Clear owned ports  12 Clear all rules\n13 Restore firewall  14 Confirm transaction  15 Roll back transaction\n0 Exit\nChoose: '
   else
    printf '\n╔══════════ 服务器保护菜单 ══════════╗\n'
-   printf ' 1 查看端口       2 添加端口       3 修改端口\n 4 删除端口       5 切换 SSH 端口  6 查看状态\n'
-   printf ' 7 启用 Fail2ban  8 停用 Fail2ban  9 关闭防火墙\n'
-   printf '10 清空自有端口  11 清空全部规则  12 恢复防火墙\n'
-   printf '13 确认变更      14 手工回退\n15 安装并启用防火墙               0 退出\n请选择：'
+   printf '\n【防火墙与端口】\n 1 安装并启用防火墙\n 2 查看端口       3 添加端口       4 修改端口\n 5 删除端口\n'
+   printf '\n【SSH 与防爆破】\n 6 切换 SSH 端口  7 启用 Fail2ban  8 停用 Fail2ban\n'
+   printf '\n【状态与维护】\n 9 查看状态\n10 关闭防火墙    11 清空自有端口  12 清空全部规则\n'
+   printf '13 恢复防火墙    14 确认变更      15 手工回退\n 0 退出\n请选择：'
   fi
   menu_read || return 0
   choice=$REPLY
   case $choice in
    0) return 0;;
-   1) menu_ports || say 'Port lookup failed.' '端口查询失败。';;
-   2|4|5)
+   2) menu_ports || say 'Port lookup failed.' '端口查询失败。';;
+   3|5|6)
     if [[ $LANGUAGE == en ]]; then printf 'Port: '; else printf '端口：'; fi
     menu_read || return 0; first=$REPLY
     case $choice in
-     2) menu_change firewall-allow --port "$first" || say 'Action failed.' '操作失败。';;
-     4) menu_change firewall-delete --port "$first" || say 'Action failed.' '操作失败。';;
-     5) menu_change ssh-port --port "$first" || say 'Action failed.' '操作失败。';;
+     3) menu_change firewall-allow --port "$first" || say 'Action failed.' '操作失败。';;
+     5) menu_change firewall-delete --port "$first" || say 'Action failed.' '操作失败。';;
+     6) menu_change ssh-port --port "$first" || say 'Action failed.' '操作失败。';;
     esac;;
-   3)
+   4)
     if [[ $LANGUAGE == en ]]; then printf 'Current port: '; else printf '原端口：'; fi
     menu_read || return 0; first=$REPLY
     if [[ $LANGUAGE == en ]]; then printf 'New port: '; else printf '新端口：'; fi
     menu_read || return 0; second=$REPLY
     menu_change firewall-edit --port "$first" --to-port "$second" || say 'Action failed.' '操作失败。';;
-   6)
+   9)
     if ! menu_invoke status; then say 'Guard status incomplete.' '保护工具状态查询不完整。'; fi
     if os systemctl is-active --quiet fail2ban; then
      if has fail2ban-client && os fail2ban-client status server-guard-sshd >/dev/null 2>&1; then
@@ -438,19 +438,19 @@ menu() {
       say 'Fail2ban: service active; this tool jail disabled' 'Fail2ban：服务运行中，本工具 jail 未启用'
      fi
     else say 'Fail2ban: service inactive' 'Fail2ban：服务未运行'; fi;;
-   15) menu_change firewall-setup || say 'Action failed.' '操作失败。';;
+   1) menu_change firewall-setup || say 'Action failed.' '操作失败。';;
    7) menu_change fail2ban-enable || say 'Action failed.' '操作失败。';;
    8) menu_change fail2ban-disable || say 'Action failed.' '操作失败。';;
-   9) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。';;
-   10) menu_change firewall-clear || say 'Action failed.' '操作失败。';;
-   11) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。';;
-   12|13|14)
+   10) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。';;
+   11) menu_change firewall-clear || say 'Action failed.' '操作失败。';;
+   12) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。';;
+   13|14|15)
     if [[ $LANGUAGE == en ]]; then printf 'Transaction ID: '; else printf '事务编号：'; fi
     menu_read || return 0; transaction=$REPLY
     case $choice in
-     12) menu_change firewall-restore --id "$transaction" || say 'Action failed.' '操作失败。';;
-     13) menu_invoke confirm --id "$transaction" --apply || say 'Confirmation failed.' '确认失败。';;
-     14)
+     13) menu_change firewall-restore --id "$transaction" || say 'Action failed.' '操作失败。';;
+     14) menu_invoke confirm --id "$transaction" --apply || say 'Confirmation failed.' '确认失败。';;
+     15)
       if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。'; continue; fi
       if [[ $LANGUAGE == en ]]; then printf 'Roll back transaction %s? Type YES: ' "$transaction"; else printf '回退事务 %s？输入“确认”执行：' "$transaction"; fi
       menu_read || return 0
