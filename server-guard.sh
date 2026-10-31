@@ -33,7 +33,7 @@ while (($#)); do
   --lang|--port|--to-port|--id|--scope|--timeout|--backend)
    (($# >= 2)) || die 'missing option value / 缺少参数值'
    case $1 in --lang) LANGUAGE=$2;; --port) PORT=$2; MENU_EXTRA=1;; --to-port) TO_PORT=$2; MENU_EXTRA=1;; --id) ID=$2; MENU_EXTRA=1;; --scope) SCOPE=$2; MENU_EXTRA=1;; --timeout) TIMEOUT=$2; MENU_EXTRA=1;; --backend) BACKEND_REQUEST=$2; MENU_EXTRA=1;; esac; shift 2;;
-  firewall-allow|firewall-edit|firewall-delete|firewall-disable|firewall-clear|firewall-restore|ssh-port|fail2ban-enable|fail2ban-disable)
+  firewall-setup|firewall-allow|firewall-edit|firewall-delete|firewall-disable|firewall-clear|firewall-restore|ssh-port|fail2ban-enable|fail2ban-disable)
    [[ -z $ACTION ]] || die 'only one action / 每次仅一个动作'; ACTION=$1; shift;;
   *) die 'unknown argument / 未知参数';;
  esac
@@ -400,13 +400,13 @@ menu() {
  if [[ ! -t 0 && -z $ADAPTER ]]; then die 'menu requires an interactive terminal / 菜单需要交互终端'; fi
  while :; do
   if [[ $LANGUAGE == en ]]; then
-   printf '\n=== Server Guard ===\n1 Ports  2 Add port  3 Edit port  4 Delete port  5 SSH port\n6 Status  7 Enable Fail2ban  8 Disable Fail2ban  9 Disable firewall\n10 Clear owned ports  11 Clear all rules  12 Restore firewall\n13 Confirm transaction  14 Roll back transaction  0 Exit\nChoose: '
+   printf '\n=== Server Guard ===\n1 Ports  2 Add port  3 Edit port  4 Delete port  5 SSH port\n6 Status  7 Enable Fail2ban  8 Disable Fail2ban  9 Disable firewall\n10 Clear owned ports  11 Clear all rules  12 Restore firewall\n13 Confirm transaction  14 Roll back transaction\n15 Install and enable firewall  0 Exit\nChoose: '
   else
    printf '\n╔══════════ 服务器保护菜单 ══════════╗\n'
    printf ' 1 查看端口       2 添加端口       3 修改端口\n 4 删除端口       5 切换 SSH 端口  6 查看状态\n'
    printf ' 7 启用 Fail2ban  8 停用 Fail2ban  9 关闭防火墙\n'
    printf '10 清空自有端口  11 清空全部规则  12 恢复防火墙\n'
-   printf '13 确认变更      14 手工回退       0 退出\n请选择：'
+   printf '13 确认变更      14 手工回退\n15 安装并启用防火墙               0 退出\n请选择：'
   fi
   menu_read || return 0
   choice=$REPLY
@@ -438,6 +438,7 @@ menu() {
       say 'Fail2ban: service active; this tool jail disabled' 'Fail2ban：服务运行中，本工具 jail 未启用'
      fi
     else say 'Fail2ban: service inactive' 'Fail2ban：服务未运行'; fi;;
+   15) menu_change firewall-setup || say 'Action failed.' '操作失败。';;
    7) menu_change fail2ban-enable || say 'Action failed.' '操作失败。';;
    8) menu_change fail2ban-disable || say 'Action failed.' '操作失败。';;
    9) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。';;
@@ -460,6 +461,12 @@ menu() {
   esac
  done
 }
+if [[ $ACTION == firewall-setup ]]; then
+ [[ $MODE == plan || $MODE == apply ]] || die 'firewall-setup requires plan/apply'
+ [[ -z $PORT$TO_PORT$ID$BACKEND_REQUEST && $SCOPE == owned ]] || die 'firewall-setup takes no port/backend/id/scope'
+ setup_firewall
+ exit
+fi
 if [[ $MODE == menu ]]; then
  [[ -z $ACTION && $MENU_EXTRA == 0 ]] || die 'menu takes only --lang / 菜单仅接受--lang'
  menu; exit

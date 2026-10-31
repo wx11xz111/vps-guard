@@ -54,6 +54,7 @@ id_of() { cat "$GUARD_TEST_ROOT/var/lib/server-guard/pending"; }
 rollback() { run rollback --id "$(id_of)" --apply >/dev/null; }
 # shellcheck source=regressions.sh
 source "$HERE/regressions.sh"
+if [[ ${GUARD_TEST_FOCUS:-} == setup ]]; then source "$HERE/setup_test.sh"; exit; fi
 if [[ ${GUARD_TEST_FOCUS:-} == ports ]]; then source "$HERE/ports_test.sh"; exit; fi
 if [[ ${GUARD_TEST_FOCUS:-} == menu ]]; then source "$HERE/menu_test.sh"; exit; fi
 if [[ ${GUARD_TEST_FOCUS:-} == fail2ban ]]; then source "$HERE/fail2ban_test.sh"; exit; fi

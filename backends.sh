@@ -1,5 +1,129 @@
 #!/usr/bin/env bash
 # Loaded only from the bundled, root-controlled runner directory.
+setup_empty_rules() {
+ local text cmd
+ if has nft; then
+  text=$(os nft list tables) || die 'Cannot inspect nftables / 无法检查nft规则'
+  if [[ -n $text ]]; then
+   [[ -z $(sed '/^table ip filter$/d;/^table ip6 filter$/d' <<< "$text") ]] || die 'Existing nft tables; use the current manager / 已有nft规则，请使用现有管理器'
+   has iptables-save && has ip6tables-save || die 'Cannot inspect existing filter tables'
+  fi
+ fi
+ for cmd in iptables-save ip6tables-save; do
+  if has "$cmd"; then
+   text=$(os "$cmd") || die 'Cannot inspect firewall rules / 无法检查防火墙规则'
+   awk '/^#/ || /^\*filter$/ || /^:(INPUT|OUTPUT|FORWARD) ACCEPT \[/ || /^COMMIT$/ || /^[[:space:]]*$/ {next} {exit 1}' <<< "$text" || die 'Existing filtering rules; no installation / 已有过滤规则，停止安装'
+  fi
+ done
+}
+setup_firewall() (
+ platform; secure_paths; discover
+ local service s status zone p rules active=0 work='' masked=0 started=0 success=0 enable_changed=0
+ [[ $(os systemctl is-system-running) =~ ^(running|degraded)$ ]] || die 'systemd unavailable'
+ [[ $FAMILY == debian ]] && service=ufw || service=firewalld
+ for s in ufw firewalld nftables netfilter-persistent iptables ip6tables; do
+  if os systemctl is-active --quiet "$s"; then
+   [[ $s == "$service" ]] || die "Firewall manager $s already active / 已有其他防火墙运行"
+   active=1
+  fi
+ done
+ if ((active)); then
+  say "$service is already active; use port management." "$service 已运行，请使用端口管理菜单。"; return 0
+ fi
+ if [[ $service == ufw ]] && has ufw && [[ $(os ufw status) == 'Status: active'* ]]; then
+  say 'UFW is already active.' 'UFW 已运行。'; return 0
+ fi
+ status=$(os systemctl is-enabled "$service" 2>/dev/null || true)
+ [[ $status != masked* ]] || die 'Service was masked by administrator / 服务已被管理员屏蔽，请先检查'
+ setup_empty_rules
+ [[ ! -f $STATE/pending ]] || die 'Confirm or roll back pending changes first / 请先处理待确认变更'
+ say "Install/enable $service; preserve SSH TCP ports: ${PROTECTED_PORTS[*]}. Other services may need additional ports." "安装并启用 $service；先放行 SSH TCP 端口：${PROTECTED_PORTS[*]}。其他业务端口请另行放行。"
+ say 'Allow these ports in your cloud security group and retain rescue-console access.' '请先在云安全组放行以上端口，并保留救援控制台入口。'
+ [[ $MODE != plan && $DRY == 0 ]] || return 0
+ [[ $APPLY == 1 ]] || die '--apply required / 需要--apply'
+ lock_state
+ [[ ! -f $STATE/pending ]] || die 'Pending transaction / 存在待确认变更'
+ work=$(mktemp -d "$STATE/setup.XXXXXXXX")
+ setup_cleanup() {
+  local rc=$?
+  if ((masked)); then os systemctl unmask --runtime "$service" || true; fi
+  if ((started && !success)); then
+   if [[ $service == ufw ]]; then os ufw --force disable || true; else os systemctl stop firewalld || true; fi
+   if ((enable_changed)); then os systemctl disable "$service" || true; fi
+   say "Activation failed; attempted to stop the firewall. Check the console if cleanup failed." "启用失败，已尝试停止防火墙；如清理报错请通过控制台检查。" >&2
+  fi
+  [[ -z $work ]] || rm -rf -- "$work"
+  exit "$rc"
+ }
+ trap setup_cleanup EXIT
+ masked=1
+ os systemctl mask --runtime "$service"
+ if [[ $service == ufw ]]; then
+  if ! has ufw; then os apt-get update; DEBIAN_FRONTEND=noninteractive os apt-get -y install ufw; fi
+  need ufw ufw ufw
+ else
+  if ! has firewall-cmd || ! has firewall-offline-cmd; then os dnf -y install firewalld; fi
+  need firewall-cmd firewalld firewalld; need firewall-offline-cmd firewalld firewalld
+ fi
+ secure_paths; setup_empty_rules
+ if [[ $service == ufw ]]; then
+  [[ $(os ufw status) == 'Status: inactive' ]] || die 'UFW status changed during installation'
+  ufw_persistent_preflight "$ROOT"
+  TX=$work
+  ufw_build "$ROOT/etc/ufw/before.rules" "$work/before.rules"
+  ufw_build "$ROOT/etc/ufw/before6.rules" "$work/before6.rules"
+  cat "$work/before.rules" > "$ROOT/etc/ufw/before.rules"
+  cat "$work/before6.rules" > "$ROOT/etc/ufw/before6.rules"
+  for p in "${PROTECTED_PORTS[@]}"; do os ufw allow "$p/tcp"; done
+ else
+  [[ ! -f $ROOT/etc/firewalld/direct.xml ]] || die 'Custom firewalld direct rules refused / 不接管自定义direct规则'
+  [[ -z $(find "$ROOT/etc/firewalld/policies" -type f -print -quit 2>/dev/null || true) ]] || die 'Custom firewalld policies refused'
+  if [[ -f $ROOT/etc/firewalld/firewalld.conf ]]; then
+   ! grep -Eq '^[[:space:]]*(CleanupOnExit=no|FirewallBackend=iptables)' "$ROOT/etc/firewalld/firewalld.conf" || die 'Unsupported firewalld configuration'
+  fi
+  os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --check-config
+  local zones policies policy rule
+  policies=$(os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --get-policies) || die 'Cannot inspect firewalld policies'
+  for policy in $policies; do
+   [[ $policy == allow-host-ipv6 ]] || die 'Custom firewalld policy refused'
+   rules=$(os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --policy="$policy" --get-target) || die 'Cannot inspect policy target'
+   [[ $rules == CONTINUE ]] || die 'Modified host policy refused'
+   rules=$(os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --policy="$policy" --list-rich-rules) || die 'Cannot inspect policy rules'
+   while IFS= read -r rule; do
+    [[ -z $rule || $rule =~ ^rule\ family=\"ipv6\"\ icmp-type\ name=\"[a-z-]+\"\ accept$ ]] || die 'Modified host policy refused'
+   done <<< "$rules"
+  done
+  zones=$(os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --get-zones)
+  [[ -n $zones ]] || die 'No firewalld zones'
+  for zone in $zones; do
+   [[ $zone =~ ^[A-Za-z0-9_-]+$ ]] || die 'Invalid zone'
+   rules=$(os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --zone="$zone" --list-rich-rules) || die 'Cannot inspect rich rules'
+   [[ -z $rules ]] || die 'Custom rich rules refused'
+   rules=$(os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --zone="$zone" --list-forward-ports) || die 'Cannot inspect forwarding'
+   [[ -z $rules ]] || die 'Custom forwarding refused'
+  done
+  for zone in $zones; do
+   for p in "${PROTECTED_PORTS[@]}"; do os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --zone="$zone" --add-port="$p/tcp"; done
+  done
+  os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --check-config
+ fi
+ os systemctl unmask --runtime "$service"; masked=0
+ started=1
+ if [[ $service == ufw ]]; then
+  os ufw --force enable
+  [[ $(os ufw status) == 'Status: active'* ]] || die 'UFW did not activate'
+ else
+  os systemctl start firewalld
+  os firewall-cmd --state
+  for zone in $zones; do
+   for p in "${PROTECTED_PORTS[@]}"; do os firewall-cmd --zone="$zone" --query-port="$p/tcp"; done
+  done
+ fi
+ [[ $status == enabled ]] || enable_changed=1
+ os systemctl enable "$service"
+ success=1
+ say "Firewall enabled: $service. Open a new SSH connection to verify access." "防火墙已启用：$service。请新建 SSH 连接验证访问。"
+)
 detect_backend() {
  local s; local -a active=()
  for s in firewalld ufw nftables; do os systemctl is-active --quiet "$s" && active+=("$s"); done
@@ -12,7 +136,7 @@ detect_backend() {
   if has nft; then nt=$(os nft list tables) || die 'cannot inspect nftables'; fi
   if has iptables-save; then ip=$(os iptables-save) || die 'cannot inspect iptables'; fi
   [[ -z $nt || -z $ip ]] || die 'ambiguous unmanaged nft/iptables; choose a single manager first'
-  if [[ -n $nt ]]; then BACKEND=nftables; elif [[ -n $ip ]]; then BACKEND=iptables; else die "no supported firewall manager. Menu 7/8 need no firewall. For port/SSH changes, allow current SSH port $SESSION_PORT/tcp in the cloud security group and UFW (Debian/Ubuntu) or firewalld (RHEL/Rocky/Alma) before enabling the manager; keep this SSH session and rescue-console access, then retry. / 未检测到受支持防火墙。菜单7/8无需防火墙；端口或SSH操作请先在云安全组和拟启用的UFW或firewalld中放行当前SSH端口 $SESSION_PORT/tcp，保留当前连接及救援控制台，再启用防火墙并重试"; fi
+  if [[ -n $nt ]]; then BACKEND=nftables; elif [[ -n $ip ]]; then BACKEND=iptables; else die "no supported firewall manager. Menu 7/8 need no firewall. For port/SSH changes, allow current SSH port $SESSION_PORT/tcp in the cloud security group and UFW (Debian/Ubuntu) or firewalld (RHEL/Rocky/Alma) before enabling the manager; keep this SSH session and rescue-console access, then retry. / 未检测到受支持防火墙。菜单7/8无需防火墙；可用菜单15安装并启用防火墙。端口或SSH操作请先在云安全组和拟启用的UFW或firewalld中放行当前SSH端口 $SESSION_PORT/tcp，保留当前连接及救援控制台，再启用防火墙并重试"; fi
  fi
 }
 iptables_shape() {

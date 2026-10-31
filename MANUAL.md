@@ -1,6 +1,6 @@
 # 独立服务器保护工具 / Server Guard
 
-`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙操作还需要所选管理器的命令和持久化服务。缺少依赖时给出 apt/dnf 提示，不会安装软件。
+`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙操作还需要所选管理器的命令和持久化服务。菜单15可安装对应防火墙；其他缺失依赖仍需按提示安装。
 
 目标发行版为 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；CentOS 7 明确拒绝。此版本已做隔离 Bash 事务和命令适配器验证，**尚未完成这些发行版上的真实公网 SSH、重启及防火墙内核验收**。不能据此承诺绝不掉线。实际使用前应准备云厂商救援控制台，并先在云安全组放行新端口；工具不能修改云安全组。
 
@@ -18,7 +18,11 @@ sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh
 
 菜单提供端口查看/添加/修改/删除、SSH 端口切换、状态及 Fail2ban 查看/启停、防火墙关闭/清空/还原、事务确认与回退。状态同时区分 Fail2ban 服务与本工具的 SSH jail。输入编号选择功能；普通变更前会显示只读预览，输入“确认”才执行；手工回退须输入有效事务编号并再次确认。执行后若出现待确认事务，须从同一管理来源新建 SSH 连接，再在菜单选择“确认变更”并输入事务编号；切换 SSH 端口时必须通过新端口连接。超时仍由现有独立任务回退。退出菜单输入 `0`。菜单只接受 `--lang zh/en`，不接受 `--dry-run` 等其它选项；非交互环境请继续使用下列明确的子命令。英文菜单可用 `bash ./server-guard.sh menu --lang en`。
 
-菜单 `7 启用 Fail2ban` 和 `8 停用 Fail2ban` 不要求先启用 UFW/firewalld。若选择端口、防火墙或 SSH 变更时提示“未检测到受支持防火墙”，先确认当前 SSH 端口在云安全组中放行、保持现有 SSH 会话并准备救援控制台，再按系统配置一个管理器：Debian/Ubuntu 使用 UFW，RHEL/Rocky/Alma 使用 firewalld。启用管理器前须在其规则中放行当前 SSH 端口；完成后重新运行菜单。脚本不会替用户安装或启动防火墙，也不会自动改动云安全组。
+菜单 `7 启用 Fail2ban` 和 `8 停用 Fail2ban` 不要求先启用 UFW/firewalld。缺少防火墙时，选择 `15 安装并启用防火墙`，先检查预览中列出的 SSH 端口已在云安全组放行，再输入“确认”。Debian/Ubuntu 通过 apt 安装 UFW；RHEL/Rocky/Alma 通过 dnf 安装 firewalld。已经安装但停用的受支持管理器也可通过此入口启用。已有管理器正在运行时会提示使用端口管理，不重复安装。
+
+安装期间临时屏蔽目标 systemd 服务以防包安装提前启动。UFW 先校验并在 IPv4/IPv6 before 规则中保护全部已识别 SSH 端口；firewalld 通过离线命令向每个区域写入 SSH 放行，再启动并查询运行状态。启用后设为开机启动。存在其他管理器、已有非平凡内核规则、自定义 firewalld direct/policy/rich/转发配置时会提前拒绝。其他业务端口不会自动发现或放行，应按需配置；云安全组由管理员维护。
+
+此入口不创建待确认事务，不卸载软件包。安装失败会清理临时服务屏蔽；启用或核对失败会尝试停用目标防火墙并报告。已添加的 SSH 放行保留，包管理器的安装结果也保留。成功后请新建 SSH 连接验证。可使用 `plan firewall-setup` 预览，或 `apply firewall-setup --apply` 执行。该行为遵循 [Ubuntu UFW 规则说明](https://ubuntu.com/server/docs/firewalls/) 和 [firewalld 离线配置手册](https://firewalld.org/documentation/man-pages/firewall-offline-cmd.html)。
 
 The no-argument entry point opens an interactive terminal menu in Chinese. Choose a numbered action, review its plan, then type `确认` to apply. The English menu is available with `menu --lang en`. Non-interactive automation should use the commands below.
 
