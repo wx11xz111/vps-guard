@@ -232,5 +232,6 @@ run apply fail2ban-disable --apply >/dev/null; rollback
 ok 'Fail2ban owns only its jail, covers all ports and ignores management source; CentOS7 rejected'
 bash "$HERE/fetch_test.sh"
 source "$HERE/features_test.sh"
+source "$HERE/fail2ban_test.sh"
 run_review_regressions all
 printf 'PASS: server-guard suite complete\n'

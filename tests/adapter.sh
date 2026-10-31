@@ -82,6 +82,7 @@ case $cmd in
    'cat nftables'|'cat iptables ip6tables') echo '[Service]';;
    'reload ssh'|'reload sshd'|'reload-or-restart fail2ban')
     mutation "$@"
+    if [[ $* == 'reload-or-restart fail2ban' ]]; then echo 1 > "$F/services/fail2ban.active"; fi
     if [[ -f $F/ssh-reload-fail && ${GUARD_RECOVERING:-} != 1 ]]; then exit 1; fi
     if [[ -f $F/se-base ]]; then
      expected_context=system_u:object_r:sshd_config_t:s0
@@ -209,7 +210,7 @@ case $cmd in
  fail2ban-client)
   case "$*" in
    -t) [[ ! -f $F/fail2ban-t ]] || exit 1;;
-   'status server-guard-sshd') [[ -f $R/etc/fail2ban/jail.d/server-guard.local ]] && grep -Eq '^enabled[[:space:]]*=[[:space:]]*true$' "$R/etc/fail2ban/jail.d/server-guard.local" || exit 1;;
+   'status server-guard-sshd') [[ ! -f $F/fail2ban-jail-fail && $(cat "$F/services/fail2ban.active") == 1 && -f $R/etc/fail2ban/jail.d/server-guard.local ]] && grep -Eq '^enabled[[:space:]]*=[[:space:]]*true$' "$R/etc/fail2ban/jail.d/server-guard.local" || exit 1;;
    *) bad "$@";;
   esac;;
  command-exists) [[ $# == 1 ]] || bad "$@"; [[ ! -f $F/missing-$1 ]] || exit 1;;

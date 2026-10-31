@@ -6,6 +6,7 @@ umask 077
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 LANGUAGE=zh ROOT='' ADAPTER='' MODE=${1:-menu} ACTION='' PORT='' TO_PORT='' ID='' SCOPE=owned APPLY=0 DRY=0 TIMEOUT=180 BACKEND_REQUEST='' MENU_EXTRA=0
 F2B_MAXRETRY='' F2B_FINDTIME='' F2B_BANTIME='' F2B_OPTIONS=0
+F2B_INSTALL=0
 [[ $# == 0 ]] || shift
 ui_printf() {
  local tone=$1 color='' reset=''
@@ -213,10 +214,49 @@ preflight() {
   se_preflight || die 'SELinux preflight failed / SELinux预检失败'
   os sshd -t -f "$ROOT/etc/ssh/sshd_config" || die 'sshd -t failed'
  fi
- if [[ $ACTION == fail2ban-* ]]; then need fail2ban-client fail2ban fail2ban; os fail2ban-client -t >/dev/null || die 'existing Fail2ban configuration invalid'; fi
+ F2B_INSTALL=0
+ if [[ $ACTION == fail2ban-* ]]; then
+  if has fail2ban-client; then
+   os fail2ban-client -t >/dev/null || die 'existing Fail2ban configuration invalid / 已有Fail2ban配置无效，请先修复'
+  elif [[ $ACTION == fail2ban-enable ]]; then
+   if [[ $FAMILY == debian ]]; then need apt-get apt apt; else need dnf dnf dnf; fi
+   F2B_INSTALL=1
+   say 'Fail2ban is missing; after confirmation, install its server and systemd journal bindings, then enable the SSH jail.' '未安装Fail2ban；确认后将安装服务端及systemd日志依赖，再启用SSH防爆破。' warning
+  else need fail2ban-client fail2ban fail2ban; fi
+ fi
  [[ $ACTION != firewall-allow || -n $PORT ]] || die '--port required'
  if [[ $ACTION == firewall-restore ]]; then [[ -n $ID ]] || die '--id required'; valid_transaction "$ID"; [[ $(sed -n '2p' "$STATE/transactions/$ID/meta") == "$BACKEND" ]] || die 'restore backend mismatch'; fi
 }
+install_fail2ban() (
+ local masked=0 enabled
+ enabled=$(os systemctl is-enabled fail2ban 2>/dev/null || true)
+ [[ $enabled != masked* ]] || die 'Fail2ban was masked by administrator / Fail2ban已被管理员屏蔽，请先检查'
+ if os systemctl is-active --quiet fail2ban; then die 'Fail2ban is active but its client is missing; repair the package first / Fail2ban服务运行中但客户端缺失，请先修复软件包'; fi
+ install_cleanup() {
+  local rc=$?
+  if ((masked)); then
+   if [[ $enabled != enabled ]] && has fail2ban-client; then os systemctl disable fail2ban || rc=1; fi
+   os systemctl unmask --runtime fail2ban || rc=1
+  fi
+  exit "$rc"
+ }
+ trap install_cleanup EXIT
+ masked=1
+ os systemctl mask --runtime fail2ban || die 'cannot mask Fail2ban during installation / 无法临时屏蔽Fail2ban，停止安装'
+ if [[ $FAMILY == debian ]]; then
+  os apt-get update || die 'package index update failed / 软件源索引更新失败'
+  DEBIAN_FRONTEND=noninteractive os apt-get -y install fail2ban python3-systemd || die 'Fail2ban installation failed / Fail2ban安装失败'
+ else
+  os dnf -y install fail2ban-server python3-systemd || die 'Fail2ban installation failed; check enabled repositories (EPEL on RHEL family) / 安装失败，请检查已启用的软件源，RHEL系列通常需要EPEL'
+ fi
+ need fail2ban-client fail2ban fail2ban-server
+ # A newly installed package stays stopped/disabled until the guarded transaction.
+ if [[ $enabled != enabled ]]; then os systemctl disable fail2ban || die 'cannot preserve disabled Fail2ban state / 无法保留Fail2ban停用状态'; fi
+ os fail2ban-client -t >/dev/null || die 'Installed Fail2ban configuration is invalid; package retained, service not started / 安装后配置校验失败，保留软件包且未启动服务，请检查其他jail配置'
+ os systemctl unmask --runtime fail2ban || die 'cannot remove temporary Fail2ban mask / 无法移除Fail2ban临时屏蔽'
+ masked=0
+ say 'Fail2ban installed; preparing the guarded configuration change.' 'Fail2ban已安装，正在准备受保护的配置变更。' success
+)
 lock_state() {
  mkdir -p "$STATE/transactions"; chmod 700 "$STATE" "$STATE/transactions"
  exec 9> "$STATE/lock"; flock -n 9 || die 'another server-guard process holds the lock'
@@ -436,7 +476,16 @@ mutate() {
    [[ -z $F2B_FINDTIME ]] || printf 'findtime = %s\n' "$F2B_FINDTIME" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
    [[ -z $F2B_BANTIME ]] || printf 'bantime = %s\n' "$F2B_BANTIME" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
    os fail2ban-client -t >/dev/null
-   os systemctl reload-or-restart fail2ban;;
+   if [[ $ACTION == fail2ban-enable ]]; then
+    os systemctl enable fail2ban
+    os systemctl reload-or-restart fail2ban
+    local ready=0 attempt
+    for attempt in {1..10}; do
+     if os fail2ban-client status server-guard-sshd >/dev/null 2>&1; then ready=1; break; fi
+     sleep 1
+    done
+    ((ready)) || die 'Fail2ban SSH jail did not start; rolling back / Fail2ban SSH防护未启动，正在回退'
+   elif os systemctl is-active --quiet fail2ban; then os systemctl reload-or-restart fail2ban; fi;;
  esac
 }
 menu_invoke() { bash "$HERE/server-guard.sh" "$@" --lang "$LANGUAGE"; }
@@ -502,7 +551,7 @@ menu() {
    ui_printf title '\n=== Server Guard ===\n'
    ui_printf success '1 Install and enable firewall\n'
    ui_printf info '2 Ports  '; ui_printf success '3 Add port  4 Edit port  '; ui_printf error '5 Delete port\n'
-   ui_printf success '6 SSH port  7 Enable Fail2ban  '; ui_printf warning '8 Disable Fail2ban\n'
+   ui_printf success '6 SSH port  7 Install and enable Fail2ban  '; ui_printf warning '8 Disable Fail2ban\n'
    ui_printf info '9 Status\n'
    ui_printf error '10 Disable firewall  11 Clear owned ports  12 Clear all rules\n'
    ui_printf warning '13 Restore firewall  '; ui_printf success '14 Confirm transaction  '; ui_printf warning '15 Roll back transaction\n'
@@ -514,7 +563,7 @@ menu() {
    ui_printf success ' 1 安装并启用防火墙\n'
    ui_printf info ' 2 查看端口       '; ui_printf success '3 添加端口       4 修改端口\n'; ui_printf error ' 5 删除端口\n'
    ui_printf section '\n【SSH 与防爆破】\n'
-   ui_printf success ' 6 切换 SSH 端口  7 启用 Fail2ban  '; ui_printf warning '8 停用 Fail2ban\n'
+   ui_printf success ' 6 切换 SSH 端口  7 安装并启用 Fail2ban  '; ui_printf warning '8 停用 Fail2ban\n'
    ui_printf section '\n【状态与维护】\n'
    ui_printf info ' 9 查看状态\n'
    ui_printf error '10 关闭防火墙    11 清空自有端口  12 清空全部规则\n'
@@ -643,6 +692,7 @@ fi
 [[ $APPLY == 1 ]] || die 'mutation requires explicit --apply / 实际变更需显式--apply'
 lock_state
 [[ ! -f $STATE/pending ]] || die 'one pending transaction only; confirm or rollback it first'
+if ((F2B_INSTALL)); then install_fail2ban; preflight; fi
 RESTORE_ID=$ID # consumed by backends.sh
 ID=$(date -u +%Y%m%d%H%M%S)-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
 TX=$STATE/transactions/$ID; mkdir "$TX"

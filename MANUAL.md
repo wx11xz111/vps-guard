@@ -1,6 +1,6 @@
 # 独立服务器保护工具 / Server Guard
 
-`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙变更还需要所选管理器的命令和持久化服务。只读规则和端口查询不要求持久化服务。菜单1可安装对应防火墙；其他缺失依赖仍需按提示安装。
+`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙变更还需要所选管理器的命令和持久化服务。只读规则和端口查询不要求持久化服务。菜单1可安装对应防火墙，菜单7/17可在确认后安装Fail2ban；其他缺失依赖仍需按提示安装。
 
 目标发行版为 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；CentOS 7 明确拒绝。此版本已做隔离 Bash 事务和命令适配器验证，并在 Ubuntu 24.04 上验证公网 SSH 登录及只读菜单；**尚未完成这些发行版上的防火墙/SSH实际变更、重启及SELinux内核验收**。不能据此承诺绝不掉线。实际使用前应准备云厂商救援控制台，并先在云安全组放行新端口；工具不能修改云安全组。
 
@@ -24,7 +24,11 @@ sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh
 
 菜单提供端口查看/添加/修改/删除、SSH 端口切换、状态及 Fail2ban 查看/启停、防火墙关闭/清空/还原、事务确认与回退。状态同时区分 Fail2ban 服务与本工具的 SSH jail。输入编号选择功能；普通变更前会显示只读预览，输入 Y/y 才执行；手工回退须输入有效事务编号并再次确认。执行后若出现待确认事务，须从同一管理来源新建 SSH 连接，再在菜单选择“确认变更”并输入事务编号；切换 SSH 端口时必须通过新端口连接。超时仍由现有独立任务回退。退出菜单输入 `0`。菜单只接受 `--lang zh/en`，不接受 `--dry-run` 等其它选项；非交互环境请继续使用下列明确的子命令。英文菜单可用 `bash ./server-guard.sh menu --lang en`。
 
-菜单 `7 启用 Fail2ban` 和 `8 停用 Fail2ban` 不要求先启用 UFW/firewalld。缺少防火墙时，选择 `1 安装并启用防火墙`，先检查预览中列出的 SSH 端口已在云安全组放行，再输入 Y/y。Debian/Ubuntu 通过 apt 安装 UFW；RHEL/Rocky/Alma 通过 dnf 安装 firewalld。已经安装但停用的受支持管理器也可通过此入口启用。已有管理器正在运行时会提示使用端口管理，不重复安装。
+菜单 `7 安装并启用 Fail2ban` 和 `8 停用 Fail2ban` 不要求先启用 UFW/firewalld。缺少防火墙时，选择 `1 安装并启用防火墙`，先检查预览中列出的 SSH 端口已在云安全组放行，再输入 Y/y。Debian/Ubuntu 通过 apt 安装 UFW；RHEL/Rocky/Alma 通过 dnf 安装 firewalld。已经安装但停用的受支持管理器也可通过此入口启用。已有管理器正在运行时会提示使用端口管理，不重复安装。
+
+Fail2ban 缺失时，菜单 7/17 及 `apply fail2ban-enable --apply` 会在确认后安装软件：Debian/Ubuntu 使用 `apt-get update` 和 `apt-get -y install fail2ban python3-systemd`；RHEL 家族使用 `dnf -y install fail2ban-server python3-systemd`，需要预先配置可提供这些包的软件源（通常为 EPEL），不自动添加仓库。`plan`、`--dry-run`、N/n 和空确认均不安装。安装在本工具排他锁内进行，已有待确认事务会阻止安装。
+
+安装期间用临时 runtime mask 防止 Fail2ban 提前启动，尊重管理员已有 mask；成功后先校验已有配置，再建立回退事务，写入本工具 jail、设为开机启动、启动或重新加载服务，并最多等待 10 秒核对 jail 就绪。安装失败会清理临时 mask；配置或启动失败按所在阶段保留软件包，事务已开始时恢复配置与服务状态。包安装不做卸载回退，新装服务在回退后保持停用。不会改写其他 jail，也不会为了安装 Fail2ban 启用防火墙；已有其他 jail 配置无效时仍需先修复。软件包依据：[Ubuntu 包信息](https://packages.ubuntu.com/noble/fail2ban)、[EPEL 服务端包](https://packages.fedoraproject.org/pkgs/fail2ban/fail2ban-server/epel-9.html)。
 
 安装期间临时屏蔽目标 systemd 服务以防包安装提前启动。UFW 先校验并在 IPv4/IPv6 before 规则中保护全部已识别 SSH 端口；firewalld 通过离线命令向每个区域写入 SSH 放行，再启动并查询运行状态。启用后设为开机启动。存在其他管理器、已有非平凡内核规则、自定义 firewalld direct/policy/rich/转发配置时会提前拒绝。其他业务端口不会自动发现或放行，应按需配置；云安全组由管理员维护。
 

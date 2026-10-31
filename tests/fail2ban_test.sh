@@ -63,4 +63,61 @@ grep -q '2222/tcp' "$work/firewall-guidance"
 grep -q '菜单7/8无需防火墙' "$work/firewall-guidance"
 ok 'Firewall actions explain how to prepare a supported manager and preserve SSH'
 
+original_adapter=$GUARD_TEST_ADAPTER
+export GUARD_TEST_ADAPTER=$HERE/fail2ban_install_adapter.sh
+missing_fail2ban() {
+ reset_fixture
+ without_firewall
+ touch "$GUARD_TEST_ROOT/fixture/missing-fail2ban-client"
+ echo 0 > "$GUARD_TEST_ROOT/fixture/services/fail2ban.active"
+ echo 0 > "$GUARD_TEST_ROOT/fixture/services/fail2ban.enabled"
+}
+for family in ubuntu rocky; do
+ missing_fail2ban
+ printf 'ID=%s\nVERSION_ID="%s"\n' "$family" "$([[ $family == ubuntu ]] && echo 24 || echo 9)" > "$GUARD_TEST_ROOT/etc/os-release"
+ run plan fail2ban-enable > "$work/install-plan"
+ grep -q '确认后将安装' "$work/install-plan"
+ [[ ! -e $GUARD_TEST_ROOT/var/lib/server-guard && ! -f $GUARD_TEST_ROOT/fixture/install.log ]]
+ run apply fail2ban-enable --dry-run > "$work/install-dry"
+ reject apply fail2ban-enable
+ printf '7\nN\n0\n' | run menu > "$work/install-cancel"
+ [[ ! -f $GUARD_TEST_ROOT/fixture/install.log ]]
+ printf '7\ny\n0\n' | run menu > "$work/install-menu"
+ grep -q 'pending / 待确认' "$work/install-menu"
+ if [[ $family == ubuntu ]]; then grep -q 'apt-get <-y> <install> <fail2ban> <python3-systemd>' "$GUARD_TEST_ROOT/fixture/install.log"
+ else grep -q 'dnf <-y> <install> <fail2ban-server> <python3-systemd>' "$GUARD_TEST_ROOT/fixture/install.log"; fi
+ [[ ! -f $GUARD_TEST_ROOT/fixture/fail2ban-masked && ! -f $GUARD_TEST_ROOT/fixture/missing-fail2ban-client ]]
+ [[ $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.active") == 1 && $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.enabled") == 1 ]]
+ grep -q 'fail2ban-client <status> <server-guard-sshd>' "$GUARD_TEST_ROOT/fixture/log"
+ rollback
+ [[ $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.active") == 0 && $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.enabled") == 0 ]]
+ [[ ! -e $GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local && ! -f $GUARD_TEST_ROOT/fixture/missing-fail2ban-client ]]
+ ok "$family menu installs missing Fail2ban only after Y, then validates/arms/enables; rollback keeps package but restores inactive state"
+done
+for failure in package-fail package-partial-fail admin-masked; do
+ missing_fail2ban
+ touch "$GUARD_TEST_ROOT/fixture/$failure"
+ reject apply fail2ban-enable --apply
+ [[ ! -f $GUARD_TEST_ROOT/fixture/fail2ban-masked && ! -f $GUARD_TEST_ROOT/var/lib/server-guard/pending ]]
+ [[ $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.active") == 0 && $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.enabled") == 0 ]]
+ ! grep -q '^MUTATE' "$GUARD_TEST_ROOT/fixture/log"
+ if [[ $failure == admin-masked ]]; then [[ ! -f $GUARD_TEST_ROOT/fixture/install.log ]]; fi
+done
+ok 'Package and partial-install failures remove temporary masks without starting services; administrator masks are respected'
+missing_fail2ban
+mkdir -p "$GUARD_TEST_ROOT/var/lib/server-guard"
+chmod 700 "$GUARD_TEST_ROOT/var/lib/server-guard"
+echo 20261031000000-0123456789abcdef > "$GUARD_TEST_ROOT/var/lib/server-guard/pending"
+reject apply fail2ban-enable --apply
+[[ ! -f $GUARD_TEST_ROOT/fixture/install.log ]]
+ok 'A pending transaction prevents package installation'
+reset_fixture
+echo 0 > "$GUARD_TEST_ROOT/fixture/services/fail2ban.active"
+echo 0 > "$GUARD_TEST_ROOT/fixture/services/fail2ban.enabled"
+touch "$GUARD_TEST_ROOT/fixture/fail2ban-jail-fail"
+reject apply fail2ban-enable --apply
+grep -q 'SSH jail did not start' "$work/reject.log"
+[[ ! -f $GUARD_TEST_ROOT/var/lib/server-guard/pending && $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.active") == 0 && $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.enabled") == 0 ]]
+ok 'A jail that never becomes ready triggers transaction rollback'
+export GUARD_TEST_ADAPTER=$original_adapter
 echo 'PASS: independent Fail2ban suite complete'
