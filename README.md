@@ -1,7 +1,27 @@
 # VPS Guard
 
-VPS Guard 是独立的中文服务器加固工具，提供 SSH 端口、防火墙端口及 Fail2ban 管理菜单。工具基于 Bash，支持 Debian、Ubuntu、Rocky、AlmaLinux 和 RHEL 的说明中列出的版本。
+VPS Guard 是独立的中文服务器加固工具，提供防火墙端口管理、SSH 端口切换及 Fail2ban 管理菜单。支持 Debian、Ubuntu、Rocky、AlmaLinux 和 RHEL 家族，具体版本及限制见[操作手册](MANUAL.md)。
 
-功能和限制详见 [操作手册](MANUAL.md)。脚本源于 VPS Manager 项目，采用 [GPL-3.0](LICENSE)。
+## 一键安装并启动
 
-本项目已经过隔离环境测试，真实公网服务器、系统重启及 SELinux 内核仍需实机验收。使用前请保留云厂商救援入口，并确保云安全组允许当前 SSH 端口。
+在服务器的 SSH 交互终端执行（需要 curl、Bash、GNU 工具及 root 或 sudo）：
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/wx11xz111/vps-guard/main/bootstrap.sh)
+```
+
+安装器校验固定版本的文件，再安装至 `/usr/local/lib/vpsmanager/server-guard`，并打开中文菜单。后续使用：
+
+```bash
+sudo --preserve-env=SSH_CONNECTION vpsguard
+```
+
+安装过程不修改防火墙或 SSH 配置。菜单中的变更需要预览及确认；启用 Fail2ban 不要求先启动防火墙。详细操作、依赖和回退说明见[操作手册](MANUAL.md)。
+
+## 验证状态
+
+脚本已经过隔离环境测试，真实公网服务器、系统重启和 SELinux 内核仍需实机验收。使用前请保留云厂商救援入口，并确保云安全组允许当前 SSH 端口。
+
+## 来源与许可
+
+本工具来自 VPS Manager 的独立服务器加固模块，基于 Bash 开发，采用 [GPL-3.0](LICENSE)。

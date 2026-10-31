@@ -1,6 +1,6 @@
 # 独立服务器保护工具 / Server Guard
 
-`scripts/server-guard/server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙操作还需要所选管理器的命令和持久化服务。缺少依赖时给出 apt/dnf 提示，不会安装软件。
+`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙操作还需要所选管理器的命令和持久化服务。缺少依赖时给出 apt/dnf 提示，不会安装软件。
 
 目标发行版为 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；CentOS 7 明确拒绝。此版本已做隔离 Bash 事务和命令适配器验证，**尚未完成这些发行版上的真实公网 SSH、重启及防火墙内核验收**。不能据此承诺绝不掉线。实际使用前应准备云厂商救援控制台，并先在云安全组放行新端口；工具不能修改云安全组。
 
@@ -25,22 +25,22 @@ The no-argument entry point opens an interactive terminal menu in Chinese. Choos
 ### 自动化子命令
 
 ```bash
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh status
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh ports
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh plan firewall-allow --port 8443
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh apply firewall-allow --port 8443 --apply
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh apply firewall-edit --port 8443 --to-port 8543 --apply
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh apply firewall-delete --port 8543 --apply
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh apply ssh-port --port 2299 --timeout 180 --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh status
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh ports
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh plan firewall-allow --port 8443
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-allow --port 8443 --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-edit --port 8443 --to-port 8543 --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-delete --port 8543 --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply ssh-port --port 2299 --timeout 180 --apply
 ```
 
 每次变更输出一个事务编号。在同一管理来源地址、同一服务器地址的**新 SSH 连接**中确认；SSH 端口变更必须经新端口建立连接。连接元组还须存在于 `ss` 的已建立连接列表中。旧连接不能确认。旧端口默认保留，工具不默认禁用密码或 root 登录。
 
 ```bash
 # 在新SSH连接中，将事务编号替换为真实输出：
-sudo --preserve-env=SSH_CONNECTION bash scripts/server-guard/server-guard.sh confirm --id 20261030120000-0123456789abcdef --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh confirm --id 20261030120000-0123456789abcdef --apply
 # 手工回退无需SSH环境，救援控制台也可使用：
-sudo bash scripts/server-guard/server-guard.sh rollback --id 20261030120000-0123456789abcdef --apply
+sudo bash ./server-guard.sh rollback --id 20261030120000-0123456789abcdef --apply
 ```
 
 `--timeout` 范围 30–3600 秒，默认 180 秒。一台机器同时只允许一个待确认事务；先确认或回退再继续。`--backend nftables|iptables|ufw|firewalld` 可明确选择后端，但不能绕过已有管理器冲突检查。
@@ -110,13 +110,13 @@ systemd 单位目录内的正常启用链接可保留；工具只严格校验自
 
 ## 固定版本分发
 
-目前没有指定发布仓库，也没有自行发布。`fetch.sh` 只下载、校验和解包，不执行下载内容。在线模式要求用户指定 `--repo`、固定 release `--version` 和从可信渠道取得的 `--sha256`；拒绝 latest/main/master/HEAD。校验整个多文件包，限制成员清单，拒绝软/硬链接、设备文件、重复成员及覆盖目标目录。
+公开源码仓库为 `wx11xz111/vps-guard`；固定版本在线 release 尚未发布。`fetch.sh` 只下载、校验和解包，不执行下载内容。在线模式要求用户指定 `--repo`、固定 release `--version` 和从可信渠道取得的 `--sha256`；拒绝 latest/main/master/HEAD。校验整个多文件包，限制成员清单，拒绝软/硬链接、设备文件、重复成员及覆盖目标目录。
 
 ```bash
 # 用真实仓库、固定发布版本和SHA256替换尖括号内容：
-bash scripts/server-guard/fetch.sh --repo '<owner>/<repo>' --version '<fixed-release>' --sha256 '<64-hex-digest>' --output ./verified-server-guard
+bash ./fetch.sh --repo '<owner>/<repo>' --version '<fixed-release>' --sha256 '<64-hex-digest>' --output ./verified-server-guard
 # 离线方式：
-bash scripts/server-guard/fetch.sh --archive ./server-guard.tar.gz --sha256 '<64-hex-digest>' --output ./verified-server-guard
+bash ./fetch.sh --archive ./server-guard.tar.gz --sha256 '<64-hex-digest>' --output ./verified-server-guard
 ```
 
 发布包根目录为 `server-guard/`，必须包含 `server-guard.sh`、`backends.sh`、`selinux.sh`、`fetch.sh`，可附 `SERVER_GUARD.md`。GitHub 地址由参数明确构造为 `https://github.com/<repo>/releases/download/<version>/server-guard.tar.gz`；它不是当前已经存在的发布承诺。SHA256 固定内容身份，即使发布标签被更改也不能绕过校验。审阅解包文件后再用 Bash 执行。
@@ -124,10 +124,10 @@ bash scripts/server-guard/fetch.sh --archive ./server-guard.tar.gz --sha256 '<64
 ## 本地验证
 
 ```bash
-bash scripts/server-guard/tests/guard_test.sh
-GUARD_TEST_FOCUS=selinux bash scripts/server-guard/tests/guard_test.sh
-GUARD_TEST_FOCUS=ports bash scripts/server-guard/tests/guard_test.sh
-bash -n scripts/server-guard/server-guard.sh
+bash ./tests/guard_test.sh
+GUARD_TEST_FOCUS=selinux bash ./tests/guard_test.sh
+GUARD_TEST_FOCUS=ports bash ./tests/guard_test.sh
+bash -n ./server-guard.sh
 ```
 
 夹具需要 root 和预先准备的独立 `TMPDIR`，其 Unix 权限必须实际有效。测试根有专用 marker 且为 root 0700；先 realpath 再校验，`//`、`/./` 无法绕过生产路径限制。所有网络/服务命令经过严格适配器，未知命令直接失败。测试运行真实 Bash、文件备份、锁和状态机，并只读调用 systemd-analyze 校验生成 unit；没有调用宿主真实防火墙、SSH 或 systemd 写操作。暂未执行真实内核防火墙、真实重启或公网连接验收。

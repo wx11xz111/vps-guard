@@ -10,6 +10,8 @@ for file in server-guard.sh backends.sh selinux.sh; do cmp "$HERE/../$file" "$pr
 [[ -x $prefix/bin/vpsguard ]]
 printf '0\n' | script -q -c "bash '$prefix/bin/vpsguard'" /dev/null > "$work/menu"
 grep -q '服务器保护菜单' "$work/menu"
+printf '0\n' | script -q -c "bash '$HERE/../install.sh' --prefix '$prefix' --launch" /dev/null > "$work/launch"
+grep -q '服务器保护菜单' "$work/launch"
 bash "$HERE/../install.sh" --prefix "$prefix" >/dev/null
 rm "$prefix/lib/vpsmanager/server-guard/selinux.sh"
 printf 'sentinel\n' > "$work/sentinel"
