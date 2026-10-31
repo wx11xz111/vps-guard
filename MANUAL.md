@@ -1,170 +1,120 @@
 # 独立服务器保护工具 / Server Guard
 
-`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙变更还需要所选管理器的命令和持久化服务。只读规则和端口查询不要求持久化服务。菜单1可安装对应防火墙，菜单7/17可在确认后安装Fail2ban；其他缺失依赖仍需按提示安装。
+VPS Guard 提供防火墙端口、SSH 端口及 Fail2ban 管理，不依赖面板或数据库。操作前预览并输入 Y/y 才执行；**成功后立即生效**，没有变更后的二次确认、待确认锁定、超时回退或手工回退入口。同一 SSH 会话可以连续执行操作。
 
-目标发行版为 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；CentOS 7 明确拒绝。此版本已做隔离 Bash 事务和命令适配器验证，并在 Ubuntu 24.04 上验证公网 SSH 登录及只读菜单；**尚未完成这些发行版上的防火墙/SSH实际变更、重启及SELinux内核验收**。不能据此承诺绝不掉线。实际使用前应准备云厂商救援控制台，并先在云安全组放行新端口；工具不能修改云安全组。
+## 安装与启动
 
-## 使用
-
-以下命令在 Linux Bash 执行。sudo 必须保留真实 SSH 会话环境；工具不会在环境丢失时猜测 22 端口。
-
-### 中文终端菜单
-
-中英文菜单的所有是否确认使用 `[y/N]`，默认否：`Y/y` 执行，`N/n` 或空输入取消；其他输入重新询问，输入结束也按取消处理。安装启用、防火墙/SSH 变更、清空、确认保留事务及回退均需明确选择 Y/y。
-
-交互终端配色：青蓝色用于标题和查看信息，绿色用于启用和成功状态，黄色用于提醒、停用状态及确认，红色用于错误、删除和清空，紫色用于输入提示，灰色用于退出和取消。输出重定向或接入管道时自动去除颜色，`TERM=dumb` 或非空 `NO_COLOR` 也会关闭颜色，例如 `NO_COLOR=1 vps-guard`；错误信息按 stderr 自身是否连接终端判断。文字标签和 Y/N 确认始终保留。
-
-通过一键安装器安装后，直接执行 `vps-guard` 即可在任意目录打开菜单；普通用户通过 sudo 提权时会保留 SSH 会话信息。菜单顺序为：1 安装并启用防火墙；2 查看端口；3 添加；4 修改；5 删除；6 切换 SSH 端口；7/8 启停 Fail2ban；9 查看状态；10 关闭防火墙；11 清空自有端口；12 清空全部规则；13 恢复防火墙；14 确认变更；15 手工回退；0 退出。
-
-进入已校验、解压的 `server-guard` 目录，在 SSH 交互终端运行一条命令即可打开中文菜单：
+在 Linux SSH 交互终端运行，需要 root 或 sudo、Bash 4.4+、curl、GNU coreutils/tar、flock、OpenSSH、ss 和发行版服务管理工具：
 
 ```bash
-sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/wx11xz111/vps-guard/main/bootstrap.sh)
+vps-guard
 ```
 
-菜单提供端口查看/添加/修改/删除、SSH 端口切换、状态及 Fail2ban 查看/启停、防火墙关闭/清空/还原、事务确认与回退。状态同时区分 Fail2ban 服务与本工具的 SSH jail。输入编号选择功能；普通变更前会显示只读预览，输入 Y/y 才执行；手工回退须输入有效事务编号并再次确认。执行后若出现待确认事务，须从同一管理来源新建 SSH 连接，再在菜单选择“确认变更”并输入事务编号；切换 SSH 端口时必须通过新端口连接。超时仍由现有独立任务回退。退出菜单输入 `0`。菜单只接受 `--lang zh/en`，不接受 `--dry-run` 等其它选项；非交互环境请继续使用下列明确的子命令。英文菜单可用 `bash ./server-guard.sh menu --lang en`。
+安装器校验固定提交及 SHA256 后安装脚本，不启用防火墙或修改 SSH 配置。已有旧版时重新执行上述安装命令即可更新。普通用户启动时通过 sudo 提权，保留 SSH_CONNECTION 与 NO_COLOR。
 
-菜单 `7 安装并启用 Fail2ban` 和 `8 停用 Fail2ban` 不要求先启用 UFW/firewalld。缺少防火墙时，选择 `1 安装并启用防火墙`，先检查预览中列出的 SSH 端口已在云安全组放行，再输入 Y/y。Debian/Ubuntu 通过 apt 安装 UFW；RHEL/Rocky/Alma 通过 dnf 安装 firewalld。已经安装但停用的受支持管理器也可通过此入口启用。已有管理器正在运行时会提示使用端口管理，不重复安装。
+支持 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；不支持 CentOS 7。需要修改防火墙时，还需相应管理器命令及持久化服务；只读查询不要求持久化组件。菜单 1 可安装防火墙，菜单 7/17 可安装 Fail2ban。
 
-Fail2ban 缺失时，菜单 7/17 及 `apply fail2ban-enable --apply` 会在确认后安装软件：Debian/Ubuntu 使用 `apt-get update` 和 `apt-get -y install fail2ban python3-systemd`；RHEL 家族使用 `dnf -y install fail2ban-server python3-systemd`，需要预先配置可提供这些包的软件源（通常为 EPEL），不自动添加仓库。`plan`、`--dry-run`、N/n 和空确认均不安装。安装在本工具排他锁内进行，已有待确认事务会阻止安装。
+## 菜单与颜色
 
-安装期间用临时 runtime mask 防止 Fail2ban 提前启动，尊重管理员已有 mask；成功后先校验已有配置，再建立回退事务，写入本工具 jail、设为开机启动、启动或重新加载服务，并最多等待 10 秒核对 jail 就绪。安装失败会清理临时 mask；配置或启动失败按所在阶段保留软件包，事务已开始时恢复配置与服务状态。包安装不做卸载回退，新装服务在回退后保持停用。不会改写其他 jail，也不会为了安装 Fail2ban 启用防火墙；已有其他 jail 配置无效时仍需先修复。软件包依据：[Ubuntu 包信息](https://packages.ubuntu.com/noble/fail2ban)、[EPEL 服务端包](https://packages.fedoraproject.org/pkgs/fail2ban/fail2ban-server/epel-9.html)。
+| 编号 | 功能 |
+| --- | --- |
+| 1 | 安装并启用防火墙 |
+| 2 / 3 / 4 / 5 | 查看、添加、修改、删除本工具端口 |
+| 6 | 切换 SSH 端口，保留原端口 |
+| 7 / 8 | 安装并启用、停用本工具 Fail2ban jail |
+| 9 | 查看状态 |
+| 10 | 关闭防火墙 |
+| 11 / 12 | 清空本工具端口、清空受支持的整机规则 |
+| 16 | 查看实际防火墙规则 |
+| 17 | 配置防爆破参数 |
+| 18 | 查看配置备份及执行结果 |
+| 0 | 退出 |
 
-安装期间临时屏蔽目标 systemd 服务以防包安装提前启动。UFW 先校验并在 IPv4/IPv6 before 规则中保护全部已识别 SSH 端口；firewalld 通过离线命令向每个区域写入 SSH 放行，再启动并查询运行状态。启用后设为开机启动。存在其他管理器、已有非平凡内核规则、自定义 firewalld direct/policy/rich/转发配置时会提前拒绝。其他业务端口不会自动发现或放行，应按需配置；云安全组由管理员维护。
+原编号 13/14/15 的恢复、确认和回退功能已移除，其他编号保留。操作前仍有 `[y/N]`：Y/y 执行，N/n、回车或输入结束取消；其他输入重新提示。没有执行后的确认步骤。
 
-此入口不创建待确认事务，不卸载软件包。安装失败会清理临时服务屏蔽；启用或核对失败会尝试停用目标防火墙并报告。已添加的 SSH 放行保留，包管理器的安装结果也保留。成功后请新建 SSH 连接验证。可使用 `plan firewall-setup` 预览，或 `apply firewall-setup --apply` 执行。该行为遵循 [Ubuntu UFW 规则说明](https://ubuntu.com/server/docs/firewalls/) 和 [firewalld 离线配置手册](https://firewalld.org/documentation/man-pages/firewall-offline-cmd.html)。
+青蓝色用于标题和查看信息，绿色用于启用及成功状态，黄色用于提醒或执行前确认，红色用于错误、删除和清空，紫色用于输入，灰色用于退出或取消。重定向、管道、TERM=dumb 或非空 NO_COLOR 使用纯文本；错误颜色按 stderr 是否连接终端判断。例如 `NO_COLOR=1 vps-guard`。
 
-UFW 后端同时通过 systemd 和 `ufw status` 识别：即使 `ufw.service` 未显示 active，只要 UFW 报告 `Status: active`，仍按 UFW 管理规则，不要求安装 `iptables-persistent`。同时检测到其他活动防火墙管理器时仍会拒绝操作。菜单 2 列出 SSH 保护端口和本工具管理的端口；菜单 `16 查看完整规则` 显示实际防火墙规则，UFW 同时输出 `status numbered` 和 `show raw`，后者包含 before/after 链等完整运行规则。此查看功能不执行变更预检，也不要求安装 iptables 持久化组件或存在 SSH 会话；显式 `rules --backend ufw` 可查看已停用 UFW 的状态及当前内核规则。
+## 立即执行与旧版迁移
 
-菜单 `17 配置防爆破` 可设置最大失败次数（1–100）、统计窗口（1–604800 秒）、封禁时长（1–31536000 秒），空输入采用 5 次、600 秒、3600 秒。预览后输入 Y/y 才执行；仍使用本工具 jail、当前管理来源豁免、新 SSH 会话确认和超时回退。菜单 7 保留快捷启用入口。未指定参数时保留本工具 jail 已有的对应值，首次启用则继承系统 Fail2ban 默认值；停用不会丢失已设置的三个参数。
+端口、SSH及Fail2ban变更使用进程锁防止同时运行，保存配置和运行规则备份后执行。完成后显示“已生效”和备份编号，不创建 pending、回退 timer、启动回退 service 或独立 runner。不需要新 SSH 会话，也不会因为上一笔操作未确认而拒绝下一笔操作。
 
-菜单 `18 查看备份` 或 `backups` 只读列出事务备份，显示编号、动作、后端、事务状态和完整性结果，不输出保存的 SSH 会话地址。编号前 14 位是 UTC 创建时间。`integrity=invalid` 表示备份损坏或不完整，不能用于恢复；此列表不自动选取或恢复最新备份。恢复仍需在菜单 13 指定编号；尚待确认的事务需通过菜单 14/15 处理。恢复使用所选事务变更前的快照，并非该次变更后的状态。
+失败时记录 `failed` 并报告备份编号，**不自动恢复之前的配置或规则**；部分已完成的步骤会保留当前结果。SSH 候选配置在修改防火墙和主配置前先运行 `sshd -t` 校验；安装阶段清理临时服务 mask 的行为仍保留。
 
-菜单 2 和 `ports` 仅采集运行规则与 SSH 端口，不执行变更预检；已有 Fail2ban nft 表、停用 UFW 或缺少 iptables 持久化/restore 命令均不会单独阻止查看。UFW 会另行显示 `active/inactive`，菜单中显示“已启用/未启用”，以免把 `ufw.service` 的状态当成实际过滤状态。实际变更继续执行全部预检，仍会拒绝不支持的规则布局或停用态。UFW 的 `show raw` 底层查询在未初始化的系统上可能创建无链、无规则的空 ip/ip6 filter 表；这不会启用 UFW 或改变过滤策略。
+升级后首次进入菜单或执行变更时，会在锁内停用本工具旧版的 `server-guard-rollback.timer`、`server-guard-rollback.service` 和 `server-guard-boot.service`，将旧 pending 记录归档为 `/var/lib/server-guard/legacy-pending.*`，保留当前配置及原备份。停止旧任务失败时中止新操作，不悄悄删记录。只读 status/ports/rules/backups 不执行迁移。
 
-The no-argument entry point opens an interactive terminal menu in Chinese. Choose a numbered action, review its plan, then type `Y` or `y` to apply. The English menu is available with `menu --lang en`. Non-interactive automation should use the commands below.
+旧 confirm、rollback、firewall-restore 和 --timeout/--id 参数已移除。`recover --apply` 仅作为兼容入口停用旧任务并归档记录，不会恢复防火墙、SSH 或 SELinux 配置。
 
-### 自动化子命令
+## 命令行
+
+菜单只接受 `--lang zh/en`，默认中文。非交互使用明确的子命令，写操作必须加 --apply：
 
 ```bash
-sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh status
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh ports
 sudo bash ./server-guard.sh rules
 sudo bash ./server-guard.sh backups
+sudo bash ./server-guard.sh status
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh plan firewall-allow --port 8443
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-allow --port 8443 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-edit --port 8443 --to-port 8543 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-delete --port 8543 --apply
-sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply ssh-port --port 2299 --timeout 180 --apply
-sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh plan fail2ban-enable --maxretry 5 --findtime 600 --bantime 3600
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply ssh-port --port 54411 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply fail2ban-enable --maxretry 5 --findtime 600 --bantime 3600 --apply
 ```
 
-每次变更输出一个事务编号。在同一管理来源地址、同一服务器地址的**新 SSH 连接**中确认；SSH 端口变更必须经新端口建立连接。连接元组还须存在于 `ss` 的已建立连接列表中。旧连接不能确认。旧端口默认保留，工具不默认禁用密码或 root 登录。
+plan 和 --dry-run 仅预览，不安装、不创建备份、不迁移旧任务。ports 列出 SSH 保护端口及本工具普通 TCP 端口；rules 显示实际管理器规则，包括本工具之外的规则。UFW 同时显示编号规则和 show raw；iptables 输出双栈运行快照；nftables 输出运行规则；firewalld 输出运行与永久区域。
+
+菜单 2 单独显示 UFW 实际 active/inactive 状态，避免把 ufw.service 的活动状态等同于启用过滤。UFW 后端同时通过 systemd 和 ufw status 检测。只读查询不会因为停用 UFW、其他 Fail2ban nft 表或缺少 iptables 持久化组件而单独拒绝。UFW show raw 可能初始化两张没有链或规则的空 ip/ip6 filter 表，不会因此启用 UFW。
+
+## Fail2ban 安装与配置
+
+菜单 7/17 在缺少客户端时，先预览，输入 Y 后通过系统软件源安装：Debian/Ubuntu 使用 `apt-get update` 和 `apt-get -y install fail2ban python3-systemd`；RHEL 家族使用 `dnf -y install fail2ban-server python3-systemd`。RHEL 系列需预先配置提供软件包的仓库（通常为 EPEL），工具不自动添加仓库。
+
+安装期间临时 mask Fail2ban，防止软件包安装提前启动封禁；尊重管理员已有 mask。完成后校验现有配置，备份、写入本工具 jail、设置开机启动、启动或重新加载服务，并最多等待 10 秒验证 jail 就绪。失败时保留已安装的软件包；仅清理安装阶段的临时 mask，不执行配置回退。
+
+只写 `/etc/fail2ban/jail.d/server-guard.local` 中的 `[server-guard-sshd]`，使用 sshd filter/systemd backend，覆盖识别出的全部 SSH 端口，ignoreip 包含当前管理来源和环回地址，不改写其他 jail。已有其他 jail 无效时需先修复。
+
+菜单 17 回车使用 5 次失败、600 秒统计窗口、3600 秒封禁；--maxretry 范围 1–100，--findtime 为 1–604800 秒，--bantime 为 1–31536000 秒。命令未指定的值保留本工具已有设置，首次启用继承系统默认值。停用再启用不会丢失这些参数。
+
+启用 Fail2ban 不要求先启用 UFW/firewalld。jail 启动与实际封禁效果需要分别验证，后者取决于系统可用的 banaction 和过滤规则。包信息见 [Ubuntu](https://packages.ubuntu.com/noble/fail2ban)、[EPEL](https://packages.fedoraproject.org/pkgs/fail2ban/fail2ban-server/epel-9.html)。
+
+## 防火墙与 SSH 范围
+
+| 后端 | 持久化与支持边界 |
+| --- | --- |
+| nftables | 唯一 inet filter 表，普通优先级 input base chain；拒绝额外 hook、复杂 jump/map/set/include 或输出过滤 |
+| iptables | 双栈 filter 表；Debian 需要 netfilter-persistent，RHEL 需要 iptables/ip6tables services；拒绝 raw/mangle/nat/security 表及竞争管理器 |
+| UFW | 标准 before.rules/before6.rules、IPV6=yes；保护链放在 before-input/output 前方；拒绝不明确的早期拒绝或后续覆盖链 |
+| firewalld | 原生 nftables 后端及唯一 inet firewalld 表；逐区域处理；拒绝复杂 direct、policy、rich、转发/伪装及无法可靠查询的配置 |
+
+实际变更继续执行上述检查，--backend 不能绕过管理器冲突。不会接管 Docker/Kubernetes、额外命名空间、tc/XDP 或其他进程并发写入的规则。只读查看的限制比写操作少。
+
+SSH 保护端口取当前 SSH_CONNECTION、sshd -T、ss -ltnp 实际 sshd 监听端口和请求新端口的并集；不能识别时拒绝，环境丢失不会猜测 22。禁止修改或删除 SSH 保护端口。socket 激活 SSH 暂不支持端口切换。旧 SSH 端口保留，工具不默认关闭密码或 root 登录。
+
+菜单 1 是首次安装/启用准备入口，不创建编号备份；根据发行版安装 UFW/firewalld，先准备全部识别出的 SSH 放行，再启用并验证。已有其他管理器或不支持的过滤规则时拒绝安装。其他业务端口需单独放行，云安全组由管理员维护。
+
+SELinux 保留 Enforcing/Permissive 状态，校验完整/本地策略、活动上下文、端口范围及 MLS/MCS，拒绝其他服务类型或不明确的覆盖。Disabled 不需要 semanage；其他模式需要 getenforce、semanage、seinfo、restorecon、matchpathcon、chcon。只新增确有必要的 SSH 单端口授权，不导入整库或修改其他服务类型。保存策略快照及新增意图，立即读回核对并保留 SSH 文件上下文；失败时不自动删除新增授权。备份使用 GNU tar --selinux 保留标签。
+
+## 备份与结果
+
+状态目录 `/var/lib/server-guard` 为 root 0700，备份及元数据为 0600，拒绝符号链接状态树。为了兼容旧版，备份仍存储在 `transactions/编号/`，其目录名不是待确认流程。latest 记录最近准备执行的备份编号，result 为 running/applied/failed，audit.log 记录执行结果。日志不记录密码。
+
+backups 验证备份校验和并显示动作、后端和结果，不显示保存的 SSH 会话地址。编号前 14 位是 UTC 创建时间。备份保存操作前状态；损坏或不完整的备份显示 integrity=invalid。保留旧 schema-2/3 的只读校验，新备份使用 schema-4。没有脚本内恢复入口。
+
+## 分发与验证
+
+bootstrap 固定同一提交的文件并校验 SHA256。fetch.sh 只下载、校验、解包固定 release 或离线包，不执行下载内容，拒绝链接、设备文件、重复或非预期成员；在线模式需要明确 --repo、固定 --version 和可信 --sha256，不能使用 main/latest/HEAD。
+
+Linux 隔离夹具需要 root 和独立 TMPDIR，真实 Unix 权限必须有效。网络及服务命令经过严格适配器，断言写入前已备份，不会操作宿主真实防火墙或 SSH。测试命令：
 
 ```bash
-# 在新SSH连接中，将事务编号替换为真实输出：
-sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh confirm --id 20261030120000-0123456789abcdef --apply
-# 手工回退无需SSH环境，救援控制台也可使用：
-sudo bash ./server-guard.sh rollback --id 20261030120000-0123456789abcdef --apply
+TMPDIR=/path/to/isolated-tmp bash tests/guard_test.sh
+TMPDIR=/path/to/isolated-tmp GUARD_TEST_FOCUS=operations bash tests/guard_test.sh
+TMPDIR=/path/to/isolated-tmp GUARD_TEST_FOCUS=fail2ban bash tests/guard_test.sh
 ```
 
-`--timeout` 范围 30–3600 秒，默认 180 秒。一台机器同时只允许一个待确认事务；先确认或回退再继续。`--backend nftables|iptables|ufw|firewalld` 可明确选择后端，但不能绕过已有管理器冲突检查。
+已有 Ubuntu 24.04 公网登录及只读菜单验证记录；本次立即生效流程使用函数级命令适配器验证，完整 Linux 回归需在可用测试机复跑。真实规则变更、SSH 切换、系统重启及 Enforcing 内核不属于已有实机验证结论。
 
-## 动作与范围
+## 外部参考
 
-| 动作 | 默认范围及行为 | `--scope all` |
-| --- | --- | --- |
-| `firewall-allow --port N` | 放行 TCP 端口；保留以前自有放行及现有无关规则 | 不用于此动作 |
-| `ports` | 只读列出受保护 SSH 端口及本工具放行的普通 TCP 端口 | 不适用 |
-| `rules` | 只读显示当前管理器实际规则；UFW 含编号与 raw 规则，iptables 双栈快照，nftables 运行规则，firewalld 全部运行/永久区域 | 不适用 |
-| `backups` | 校验并列出已有事务备份及状态，不需要 SSH 会话 | 不适用 |
-| `firewall-edit --port OLD --to-port NEW` | 将本工具自有普通端口改为新端口；原端口须完整存在于运行与持久规则 | 不用于此动作 |
-| `firewall-delete --port N` | 删除本工具自有普通端口；受保护 SSH 端口不可删除 | 不用于此动作 |
-| `firewall-clear` | 移除自有普通端口规则，重新保留全部受保护 SSH 端口和已有连接 | 清空所支持的整机过滤规则并改为放行；必须显式指定 |
-| `firewall-disable` | 同上，仅撤销自有普通端口规则 | nftables/iptables 改为持久的放行策略；UFW/firewalld 关闭其防火墙管理器 |
-| `firewall-restore --id ID` | 从选定事务的**变更前**备份还原防火墙运行和持久状态，并补回当前 SSH 保护；本次还原本身也是可回退事务 | 不用于此动作 |
-| `ssh-port --port N` | 先保护新旧端口，再预置全局 Port、`sshd -t` 校验并 reload；保留原配置和 Include | 不用于此动作 |
-| `fail2ban-enable` / `fail2ban-disable` | 仅管理 `server-guard-sshd` jail 的专属文件；启用前后校验配置 | 不用于此动作 |
-
-`firewall-disable --scope all` 在 nftables/iptables 上保留持久化服务，但有效过滤策略为放行；这样不会误停止一个服务并遗留旧规则。UFW 全量清空使用其 reset/default 命令建立持久放行策略；关闭则保持禁用。firewalld 全量清空先将所有区域的永久 target 设为 ACCEPT，再 reload，随后清理服务/端口条目；关闭使用 stop/disable，预检要求 `CleanupOnExit` 为默认值或 yes。
-
-## 后端覆盖与拒绝边界
-
-| 后端 | 已实现动作 | 安全支持范围 | 预检拒绝 |
-| --- | --- | --- | --- |
-| nftables | 放行、自有/全部清空、放行策略关闭、还原 | 唯一 `inet filter` 表，唯一普通优先级 input base chain；可含 forward；output 只允许无过滤的 ACCEPT 路径；IPv4/IPv6 一并保护 | 额外表/base chain、早期 hook、非标准链、jump/goto、map/set/include、输出过滤等无法确定安全路径的结构 |
-| iptables | 放行、自有/全部清空、放行策略关闭、还原 | IPv4/IPv6 两套 filter 表，INPUT 前置保护链及 OUTPUT 已有连接链；Debian 使用 netfilter-persistent，RHEL 使用 iptables/ip6tables services | raw/mangle/nat/security 表、竞争 nft 表、缺少任一双栈命令或持久化服务 |
-| UFW | 放行、自有/全部清空、关闭、还原 | 标准 before.rules/before6.rules、filter 表、`IPV6=yes`；分别在 `ufw-before-input/output` 和 `ufw6-before-input/output` 的最前方保护；校验备份支持停用态还原 | 非 filter 早期表、竞争管理器、缺少标准链/IPv6开关；更早的 before-logging 链存在非日志/返回路径；after/user 文件重定义保护链 |
-| firewalld | 放行、自有/全部清空、关闭、还原 | 原生 nftables 后端、唯一 `inet firewalld` 表；逐区域处理，包含非默认区域；运行/永久的端口、服务、接口、来源分别恢复 | direct/passthrough、自定义 policy、复杂 rich rule、端口转发/伪装等、运行/永久 target 或 forward 不一致、缺少可靠 introspection 的旧版本；默认 `allow-host-ipv6` 只接受受限的纯 IPv6 ICMP accept 规则 |
-
-未知规则布局应由管理员先审查，不用 `--backend` 强行覆盖。工具假设防火墙由检测到的管理器独占管理；不会接管 Docker/Kubernetes、额外网络命名空间、tc/XDP 或其他进程并发写入的规则。以上是明确的支持子集，不代表任意防火墙配置均受支持。系统服务单位应使用发行版标准持久化配置路径；自定义加载路径需人工适配。
-
-批量撤销自有普通端口放行使用显式 `firewall-clear`/`firewall-disable`；`firewall-edit`/`firewall-delete` 只移除指定旧端口的放行，保留其他普通端口。SSH、Fail2ban 及追加放行动作保留已经确认的普通端口；restore 保留目标备份内已有的自有端口。UFW 预检同时审视运行规则及 before/after/user 双栈持久文件，因为 before-logging 链早于 before 链，且 user 文件可在后续加载中重置链。无法证明安全的早期跳转或链覆盖直接拒绝。
-
-UFW/firewalld 已确认整机关闭后，可直接 `apply firewall-restore --id ID --apply`，后端从校验通过的备份确定，不需要手工启动管理器。工具先快照当前停用状态并建立持久回退，再为目标持久配置补充当前 SSH 端口，最后启用加载。firewalld 使用 `firewall-offline-cmd --system-config … --check-config/--zone/--add-port`，缺少命令明确拒绝；停用态存在其他防火墙规则也会拒绝。还原失败或超时会恢复此前的停用状态。仍未完成真实机器的关闭→重启→还原验收。
-
-SSH 保护端口取并集：`SSH_CONNECTION` 的服务器端口、`sshd -T` 的有效 Port、`ss -ltnp` 中实际 sshd 监听端口、新请求端口。任何关键发现失败都会拒绝。SSH socket 激活（包括已启用但未启动的 socket）暂不支持。SELinux Enforcing/Permissive 的端口事务已实现并通过受控模型验证，真实 Enforcing 内核与发行版服务仍待验收。
-
-普通端口的查看、添加、修改、删除均是独立脚本命令；变更仍需 `--apply`，并按原有新连接确认或超时回退。修改和删除只接受工具自有且运行/持久状态一致的普通 TCP 端口，禁止改删受保护 SSH 端口；firewalld 对外部已有放行或所有权记录异常会拒绝。`ports` 不创建事务。English: `ports` lists protected SSH and tool-owned TCP ports. `firewall-allow`, `firewall-edit`, and `firewall-delete` manage only supported tool-owned rules; edits and deletes reject protected SSH ports and inconsistent ownership. Mutations still require `--apply` and the existing confirmation or rollback flow.
-
-### SELinux 端口事务 / SELinux port transactions
-
-Disabled 不需要 semanage。Enforcing/Permissive 需要 `getenforce`、`semanage`、`seinfo`、`restorecon`、`matchpathcon`、`chcon`；Debian/Ubuntu 对应 `selinux-utils`、`policycoreutils`、`policycoreutils-python-utils`、`setools`、`coreutils`，RHEL 家族的 `seinfo` 通常来自 `setools-console`，其余为 `libselinux-utils`、`policycoreutils`、`policycoreutils-python-utils`、`coreutils`。不会自动安装。缺少 getenforce 时必须从可读的活动内核文件系统/挂载信息确认 SELinux 未初始化；查询失败或状态未知直接拒绝。
-
-读取 `LC_ALL=C semanage port -l -n`、`-l -n -C`、`-E`，并通过只读 `seinfo --portcon -x --flat /sys/fs/selinux/policy` 核对活动完整上下文，按协议、精确键、范围和本地覆盖交叉校验；查询不可用或数据不一致即拒绝。已有 `ssh_port_t` 单端口或不歧义范围复用且不删除。只有基础策略的已知通用默认范围（`port_t` 1–65535、`unreserved_port_t` 1024–65535、`reserved_port_t` 1–511 或 1–1023、`hi_reserved_port_t` 512–1023）可被新 SSH 单端口覆盖；基础或本地目标的非默认 MLS/MCS、其他服务类型、歧义范围、格式不完整均拒绝。UDP 同号端口不与 TCP 冲突。要求可读的标准 selinuxfs 路径 `/sys/fs/selinux/mls`。MLS 开启时只接受目标 `s0`，关闭时必须没有范围；该内核状态随快照保存并在后续核对。新增请求 `s0`，无 MLS 内核按官方语义忽略范围，按无范围记录验证。不支持自定义 MLS/MCS 级别迁移。
-
-受保护快照包含完整/本地策略、活动上下文、原 SSH 文件上下文与摘要。配置归档和恢复使用 GNU tar `--selinux`，保留所重建文件及目录的原标签；独立 timer/boot runner 准备并落盘后再次核对目标策略，持久记录新增意图，才执行 `semanage port -a -t ssh_port_t -p tcp -r s0 N` 并读回验证，随后修改 SSH 配置及 reload。文件标签恢复/校验失败时停止；新 runner 与 unit 使用 restorecon/matchpathcon，SSH 文件恢复原上下文。确认还要复核授权，保留新增授权。失败或未确认恢复先还原 SSH 配置/标签并 reload，再精确 `semanage port -d -p tcp N`。只删除本事务新增授权，绝不修改其他服务类型、关闭 SELinux 或导入整库策略。
-
-写入后报错与已删后的重试均由落盘意图和读回状态判断。目标的类型、端口范围或 MLS 被外部修改时保留 pending 并报告冲突，由管理员核查后重试；无关端口的外部变更保留。旧格式事务没有新增授权所有权。工具只锁自己的事务，**要求变更期间没有其他管理器并发写同一端口或更新隐藏的基础策略**，不声称拥有 SELinux 策略库的跨进程事务锁。真实内核加载、systemd 重启与公网 SSH 尚未验证。
-
-首次 SELinux 版本的 schema-2 待确认事务仍可用新版命令确认或回退：按其原快照核对精确本地授权及新增意图，只删除本事务新增的映射；该旧快照没有活动基础策略完整 MLS 记录，不能追溯核对。新建事务使用包含活动上下文的 schema-3。English: Pending schema-2 transactions remain confirmable and recoverable using their original checksummed ownership evidence; only an exact mapping added by that transaction may be deleted. Their missing active base context cannot be reconstructed. New transactions use schema-3 checks.
-
-English: Enforcing and Permissive preserve their mode. Server Guard compares full/local listings and the local export against complete active `seinfo --portcon` contexts; missing or nondefault base MLS/MCS data fails closed. It reuses existing SSH mappings, rejects service conflicts and customized generic ranges, and adds only one exact TCP `ssh_port_t` mapping at `s0`. The readable kernel MLS mode is captured and rechecked. GNU tar `--selinux` saves and restores labels for rebuilt configuration trees before services start. A durable recovery runner and checksummed snapshot precede the durable add intent and policy write. Authorization is verified before SSH reload and again before confirmation. Rollback restores the original SSH configuration/context and reloads SSH before deleting only its own exact mapping. Failed deletes retain pending state for retry; unrelated changes survive. Nonstandard MLS/MCS migration and concurrent writers are unsupported. Tests use a controlled policy model, not a real Enforcing kernel or public SSH connection.
-
-Fail2ban 写入 `/etc/fail2ban/jail.d/server-guard.local`，只包含 `[server-guard-sshd]`，使用 sshd filter/systemd backend。端口覆盖所有受保护端口，ignoreip 包含当前管理来源及环回地址；不会清空或改写用户的其他 jail。用户已有 jail 的封禁策略由用户自行管理。
-
-Fail2ban 服务能够启动与实际封禁生效是两件事；封禁仍取决于机器上可用的 Fail2ban `banaction` 和内核过滤规则。完成变更后，可从新的 SSH 连接确认事务，并用菜单 `9 查看状态` 或 `fail2ban-client status server-guard-sshd` 核对 jail；实际封禁效果留待真实服务器验收。
-
-## 回退与数据
-
-状态目录固定为 `/var/lib/server-guard`，要求 root 所有、0700；备份/元数据 0600，使用 flock 排他锁。参数、事务 ID、端口、来源地址和路径经过校验；不 eval、不 source 用户参数。固定模块来自已校验的同一工具包。拒绝符号链接状态和可被其他用户修改的状态树。
-
-systemd 单位目录内的正常启用链接可保留；工具只严格校验自己写入的三个 unit、相应父路径及两个启用链接的目标，不递归拒绝整个系统 unit 目录。测试适配器实际创建/移除 enable/disable 链接，并维护管理器运行状态。
-
-事务先保存运行规则、相关 `/etc` 配置、服务启用/运行状态，再落盘独立 runner、`server-guard-rollback.service/.timer` 和 `server-guard-boot.service`。timer 使用 `OnCalendar`、`Persistent=true`；启动检查服务发现待确认事务即回退。必须验证 timer active、下一次触发时间确在未来、启动检查已启用，才能开始网络写入。service 的失败重启用于重试，故不依赖原 SSH shell。时钟严重异常、损坏的系统盘或不可用的 systemd 仍需救援控制台处理。
-
-失败补偿会恢复配置、服务状态及独立运行规则；firewalld 先恢复永久文件并 reload，再重建原运行差异，**不使用 runtime-to-permanent**。回退失败保留 pending、备份与回退任务，供服务重试或管理员再次执行 rollback。只有确认成功或回退完成后才撤销回退调度。审计只记时间、动作和编号，不记口令。禁用后的 unit/runner 保留供审计；勿在有待确认事务时删除状态目录。
-
-## 固定版本分发
-
-公开源码仓库为 `wx11xz111/vps-guard`；固定版本在线 release 尚未发布。`fetch.sh` 只下载、校验和解包，不执行下载内容。在线模式要求用户指定 `--repo`、固定 release `--version` 和从可信渠道取得的 `--sha256`；拒绝 latest/main/master/HEAD。校验整个多文件包，限制成员清单，拒绝软/硬链接、设备文件、重复成员及覆盖目标目录。
-
-```bash
-# 用真实仓库、固定发布版本和SHA256替换尖括号内容：
-bash ./fetch.sh --repo '<owner>/<repo>' --version '<fixed-release>' --sha256 '<64-hex-digest>' --output ./verified-server-guard
-# 离线方式：
-bash ./fetch.sh --archive ./server-guard.tar.gz --sha256 '<64-hex-digest>' --output ./verified-server-guard
-```
-
-发布包根目录为 `server-guard/`，必须包含 `server-guard.sh`、`backends.sh`、`selinux.sh`、`fetch.sh`，可附 `SERVER_GUARD.md`。GitHub 地址由参数明确构造为 `https://github.com/<repo>/releases/download/<version>/server-guard.tar.gz`；它不是当前已经存在的发布承诺。SHA256 固定内容身份，即使发布标签被更改也不能绕过校验。审阅解包文件后再用 Bash 执行。
-
-## 本地验证
-
-```bash
-bash ./tests/guard_test.sh
-GUARD_TEST_FOCUS=selinux bash ./tests/guard_test.sh
-GUARD_TEST_FOCUS=ports bash ./tests/guard_test.sh
-GUARD_TEST_FOCUS=features bash ./tests/guard_test.sh
-bash -n ./server-guard.sh
-```
-
-夹具需要 root 和预先准备的独立 `TMPDIR`，其 Unix 权限必须实际有效。测试根有专用 marker 且为 root 0700；先 realpath 再校验，`//`、`/./` 无法绕过生产路径限制。所有网络/服务命令经过严格适配器，未知命令直接失败。测试运行真实 Bash、文件备份、锁和状态机，并只读调用 systemd-analyze 校验生成 unit；没有调用宿主真实防火墙、SSH 或 systemd 写操作。暂未执行真实内核防火墙、真实重启或公网连接验收。
-
-## 外部功能参考
-
-参考 [avsba001/vps-secure 主入口](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/vps-secure.sh)、[Fail2ban 模块](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/fail2ban.sh)和[规则检查模块](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/ssh-whitelist-check.sh)的功能思路，独立实现可选封禁参数、备份列表与原生规则查看。UFW 完整规则展示依据 [Ubuntu UFW 手册](https://manpages.ubuntu.com/manpages/jammy/man8/ufw.8.html)。未引入上游脚本的远程自动执行、内核替换、CAKE、mangle MSS、地域/ASN 白名单或聚合网段封禁；这些功能需要单独定义兼容范围及回退方式。
-
-语义依据：[firewalld 运行与永久配置](https://firewalld.org/documentation/configuration/runtime-versus-permanent.html)、[firewall-cmd](https://firewalld.org/documentation/man-pages/firewall-cmd.html)、[firewall-offline-cmd](https://firewalld.org/documentation/man-pages/firewall-offline-cmd.html)、[UFW 加载顺序](https://sources.debian.org/src/ufw/0.36-1/src/ufw-init-functions/)、[nftables 链与 hook](https://wiki.netfilter.org/wiki-nftables/index.php/Configuring_chains)、[systemd.timer](https://www.freedesktop.org/software/systemd/man/247/systemd.timer.html)。
-
-SELinux 依据：[Red Hat SSH 端口配置](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10/html/securing_networks/using-secure-communications-between-two-systems-with-openssh)、[官方 semanage-port 手册](https://github.com/SELinuxProject/selinux/blob/3.6/python/semanage/semanage-port.8)、[portRecords 源码（精确键、列表与 MLS 导出）](https://github.com/SELinuxProject/selinux/blob/3.6/python/semanage/seobject.py)、[SETools seinfo 源码](https://github.com/SELinuxProject/setools/blob/main/seinfo)、[GNU tar SELinux 上下文说明](https://www.gnu.org/software/tar/manual/tar.html)、[基础策略默认范围](https://github.com/SELinuxProject/refpolicy/blob/RELEASE_2_20240226/policy/modules/kernel/corenetwork.te.in)、[内核 selinuxfs 初始化与 MLS 状态](https://github.com/torvalds/linux/blob/v6.6/security/selinux/selinuxfs.c)。
+参考 [avsba001/vps-secure](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/vps-secure.sh) 的执行前提示、分步操作和配置备份思路，独立实现立即生效流程。未引入远程自动执行、内核替换、CAKE、MSS、地域/ASN 限制或聚合网段封禁。

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sourced by server-guard.sh. Never evaluate semanage output as shell code.
-se_error() { printf 'SELinux: %s / 策略无法安全确认，停止并保留可重试状态\n' "$*" >&2; return 1; }
+se_error() { printf 'SELinux: %s / 策略校验失败，操作停止\n' "$*" >&2; return 1; }
 se_mode() {
  if has getenforce; then
   SE_MODE=$(os getenforce) || { se_error 'getenforce failed'; return 1; }
@@ -147,13 +147,12 @@ se_snapshot() {
 }
 se_labels() {
  [[ ${SE_MODE:-Disabled} != Disabled ]] || return 0
- os restorecon -RF "$STATE" "$UNITS/server-guard-boot.service" "$UNITS/server-guard-rollback.service" "$UNITS/server-guard-rollback.timer" || return
+ os restorecon -RF "$STATE" || return
  local p
  while IFS= read -r p; do os matchpathcon -V "$p" || return; done < <(find "$STATE" -type f)
- for p in server-guard-boot.service server-guard-rollback.service server-guard-rollback.timer; do os matchpathcon -V "$UNITS/$p" || return; done
 }
 se_restore_context() {
- [[ -f $TX/selinux.meta ]] || return 0 # Legacy transactions own no SELinux ports.
+ [[ -f $TX/selinux.meta ]] || return 0 # Backups without SELinux metadata need no context handling.
  local context; context=$(sed -n '4p' "$TX/selinux.meta")
  [[ -n $context ]] || return 0
  os chcon -- "$context" "$ROOT/etc/ssh/sshd_config" || return
@@ -166,7 +165,7 @@ se_expected_added() {
  local expected=system_u:object_r:ssh_port_t
  [[ $SE_LEVEL == none ]] || expected+=:s0
  grep -Fxq "tcp $PORT $PORT ssh_port_t $SE_LEVEL $expected" <<< "$SE_TARGET_ACTIVE" || { se_error 'active added context changed'; return 1; }
- if [[ $(sed -n '5p' "$TX/meta") == schema-3 ]]; then
+ if [[ $(sed -n '5p' "$TX/meta") =~ ^schema-[34]$ ]]; then
   without=$(awk -v p="$PORT" '!($2==p && $3==p && $4=="ssh_port_t")' <<< "$SE_TARGET_ACTIVE")
   [[ $without == "$(cat "$TX/selinux.target-active")" ]] || { se_error 'active base contexts changed'; return 1; }
  fi
@@ -184,7 +183,7 @@ se_apply() {
  [[ $SE_LEVEL == "$(sed -n '5p' "$TX/selinux.meta")" ]] && se_original_target || { se_error 'policy changed since preflight'; return 1; }
  [[ $(sed -n '2p' "$TX/selinux.meta") == add ]] || return 0
  # The digest-bound intent is durable BEFORE semanage: a failed command may
- # have committed, and the detached runner must discover that on its own.
+ # have committed; retain the exact intent in the backup for inspection.
  sha256sum "$TX/selinux.meta" | cut -d ' ' -f 1 > "$TX/selinux.intent.new"
  sync -f "$TX/selinux.intent.new"
  mv -- "$TX/selinux.intent.new" "$TX/selinux.intent"
@@ -192,7 +191,7 @@ se_apply() {
  os semanage port -a -t ssh_port_t -p tcp -r s0 "$PORT" || return
  se_read && se_expected_added
 }
-se_confirm() {
+se_verify() {
  [[ -f $TX/selinux.meta ]] || return 0
  PORT=$(sed -n '3p' "$TX/selinux.meta")
  se_mode || return
@@ -202,20 +201,4 @@ se_confirm() {
  [[ $SE_LEVEL == "$(sed -n '5p' "$TX/selinux.meta")" ]] || { se_error 'kernel MLS mode changed'; return 1; }
  if [[ $(sed -n '2p' "$TX/selinux.meta") == add ]]; then se_expected_added
  else se_original_target || { se_error 'reused authorization changed'; return 1; }; fi
-}
-se_rollback() {
- [[ -f $TX/selinux.intent ]] || return 0
- [[ -f $TX/selinux.meta && $(cat "$TX/selinux.intent") == "$(sha256sum "$TX/selinux.meta" | cut -d ' ' -f 1)" && $(sed -n '2p' "$TX/selinux.meta") == add ]] || { se_error 'invalid durable intent'; return 1; }
- PORT=$(sed -n '3p' "$TX/selinux.meta")
- se_mode || return
- [[ $SE_MODE != Disabled ]] || { se_error 'SELinux disabled during pending transaction'; return 1; }
- se_read || return
- [[ $SE_LEVEL == "$(sed -n '5p' "$TX/selinux.meta")" ]] || { se_error 'kernel MLS mode changed'; return 1; }
- # Already absent (or add failed before commit): idempotent only if the old
- # target policy is intact. Unrelated changes elsewhere are allowed.
- if se_original_target; then return 0; fi
- se_expected_added || return
- os semanage port -d -p tcp "$PORT" || return
- se_read || return
- se_original_target || { se_error 'delete read-back failed'; return 1; }
 }

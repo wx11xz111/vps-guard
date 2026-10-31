@@ -5,6 +5,10 @@ HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 work=$(mktemp -d "$TMPDIR/guard-install-test.XXXXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 prefix=$work/prefix
+export GUARD_TEST_ROOT=$work/root GUARD_TEST_ADAPTER=$HERE/adapter.sh
+mkdir -p "$GUARD_TEST_ROOT"
+chmod 700 "$GUARD_TEST_ROOT"
+printf 'server-guard-fixture-v1\n' > "$GUARD_TEST_ROOT/.server-guard-test"
 bash "$HERE/../install.sh" --prefix "$prefix" > "$work/output"
 for file in server-guard.sh backends.sh selinux.sh; do cmp "$HERE/../$file" "$prefix/lib/vpsmanager/server-guard/$file"; done
 [[ -x $prefix/bin/vps-guard ]]

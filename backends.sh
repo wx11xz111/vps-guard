@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Loaded only from the bundled, root-controlled runner directory.
+# Loaded only from the bundled, root-controlled installation directory.
 setup_empty_rules() {
  local text cmd
  if has nft; then
@@ -36,13 +36,11 @@ setup_firewall() (
  status=$(os systemctl is-enabled "$service" 2>/dev/null || true)
  [[ $status != masked* ]] || die 'Service was masked by administrator / 服务已被管理员屏蔽，请先检查'
  setup_empty_rules
- [[ ! -f $STATE/pending ]] || die 'Confirm or roll back pending changes first / 请先处理待确认变更'
  say "Install/enable $service; preserve SSH TCP ports: ${PROTECTED_PORTS[*]}. Other services may need additional ports." "安装并启用 $service；先放行 SSH TCP 端口：${PROTECTED_PORTS[*]}。其他业务端口请另行放行。"
  say 'Allow these ports in your cloud security group and retain rescue-console access.' '请先在云安全组放行以上端口，并保留救援控制台入口。' warning
  [[ $MODE != plan && $DRY == 0 ]] || return 0
  [[ $APPLY == 1 ]] || die '--apply required / 需要--apply'
  lock_state
- [[ ! -f $STATE/pending ]] || die 'Pending transaction / 存在待确认变更'
  work=$(mktemp -d "$STATE/setup.XXXXXXXX")
  setup_cleanup() {
   local rc=$?
@@ -285,38 +283,15 @@ backend_preflight() {
    if [[ $BACKEND == ufw ]]; then
     need ufw ufw ufw
     local ufw_status; ufw_status=$(os ufw status) || die 'cannot query UFW status'
-    [[ $ufw_status == 'Status: active'* || ($ufw_status == 'Status: inactive' && $ACTION == firewall-restore) ]] || die 'inactive UFW only accepts verified firewall-restore'
+    [[ $ufw_status == 'Status: active'* ]] || die 'UFW is inactive; enable it before changing ports / UFW未启用，请先启用再修改端口'
     [[ -f $ROOT/etc/ufw/before.rules && -f $ROOT/etc/ufw/before6.rules ]] || die 'UFW persistent rule files missing'
     ufw_persistent_preflight "$ROOT"
     ufw_early_paths "$IPT4"; ufw_early_paths "$IPT6"
-    if [[ $ACTION == firewall-restore ]]; then
-     local archive=$STATE/transactions/$ID/config.tar
-     ufw_validate_text "$(tar -xOf "$archive" etc/default/ufw)" "$(tar -xOf "$archive" etc/ufw/before.rules)" "$(tar -xOf "$archive" etc/ufw/before6.rules)"
-     local member
-     while IFS= read -r member; do
-      case $member in etc/ufw/after.rules|etc/ufw/after6.rules|etc/ufw/user.rules|etc/ufw/user6.rules) ufw_later_paths "$(tar -xOf "$archive" "$member")";; esac
-     done < <(tar -tf "$archive")
-    fi
    elif [[ $FAMILY == debian ]]; then os systemctl cat netfilter-persistent >/dev/null || die 'install iptables-persistent explicitly for persistence'
    else os systemctl cat iptables ip6tables >/dev/null || die 'install iptables-services explicitly for persistence'; fi;;
   firewalld)
    need firewall-cmd firewalld firewalld
-   FW_RUNNING=1
-   if ! fw_query --state >/dev/null; then
-    [[ $ACTION == firewall-restore ]] || die 'inactive firewalld only accepts verified firewall-restore'
-    os systemctl is-active --quiet firewalld && die 'firewalld daemon state is inconsistent'
-    FW_RUNNING=0
-   fi
-   if [[ $ACTION == firewall-restore ]]; then need firewall-offline-cmd firewalld firewalld; fi
-   if [[ $FW_RUNNING == 0 ]]; then
-    need nft nftables nftables
-    [[ -z $(os nft list tables) ]] || die 'foreign nft rules prevent stopped firewalld restore'
-    if has iptables-save; then [[ -z $(os iptables-save) ]] || die 'foreign iptables rules prevent stopped firewalld restore'; fi
-    if has ip6tables-save; then [[ -z $(os ip6tables-save) ]] || die 'foreign ip6tables rules prevent stopped firewalld restore'; fi
-    os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --check-config >/dev/null || die 'invalid stopped firewalld configuration'
-    FW_ZONES=''
-    return 0
-   fi
+   fw_query --state >/dev/null || die 'firewalld is inactive / firewalld未运行'
    FW_ZONES=$(fw_query --get-zones) || die 'cannot list firewalld zones'
    [[ -n $FW_ZONES ]] || die 'no firewalld zones'
    fw_query --get-active-zones >/dev/null || die 'cannot inspect active zones'
@@ -341,39 +316,6 @@ backend_snapshot() {
    for zone in $FW_ZONES; do
     for prop in ports services interfaces sources; do fw_query --zone="$zone" --list-"$prop" > "$TX/firewalld/$zone.$prop"; done
    done;;
- esac
-}
-fw_reconcile() {
- local protect=${1:-0} zone prop current saved value singular p
- fw_query --reload || return
- for zone in $(cat "$TX/fw.zones"); do
-  [[ $zone =~ ^[A-Za-z0-9_-]+$ ]] || return 1
-  for prop in ports services interfaces sources; do
-   singular=${prop%s}
-   current=$(fw_query --zone="$zone" --list-"$prop") || return
-   saved=$(cat "$TX/firewalld/$zone.$prop") || return
-   if [[ $protect == 1 && $prop == ports ]]; then for p in "${PORTS[@]}"; do saved+=" $p/tcp"; done; fi
-   for value in $current; do
-    [[ " $saved " == *" $value "* ]] || fw_query --zone="$zone" --remove-"$singular=$value" >/dev/null || return
-   done
-   for value in $saved; do
-    [[ " $current " == *" $value "* ]] || fw_query --zone="$zone" --add-"$singular=$value" >/dev/null || return
-   done
-  done
- done
-}
-backend_restore() {
- case $BACKEND in
-  nftables)
-   { echo 'flush ruleset'; cat "$TX/nft.runtime"; } > "$TX/nft.restore"
-   os nft -f "$TX/nft.restore";;
-  iptables|ufw)
-   os iptables-restore < "$TX/ipv4.runtime" || return
-   os ip6tables-restore < "$TX/ipv6.runtime";;
-  firewalld)
-   # A snapshot taken while stopped has no daemon runtime to reload. Restoring
-   # its service state already removed the tool's subsequently activated rules.
-   if grep -q '^firewalld 1 ' "$TX/services"; then fw_reconcile; fi;;
  esac
 }
 iptables_build() {
@@ -460,14 +402,6 @@ persist_iptables() {
   os systemctl enable iptables; os systemctl enable ip6tables
  fi
 }
-restore_firewall_files() {
- local saved=$1 p; local -a members=()
- for p in etc/nftables.conf etc/iptables etc/sysconfig/iptables etc/sysconfig/ip6tables etc/ufw etc/default/ufw etc/firewalld var/lib/server-guard/firewalld.owned; do
-  rm -rf -- "$ROOT/${p:?}"
-  if grep -Fxq "$p" "$saved/paths"; then members+=("$p"); fi
- done
- ((${#members[@]} == 0)) || os tar --selinux -C "${ROOT:-/}" -xf "$saved/config.tar" -- "${members[@]}"
-}
 nft_build() {
  local input=$1 output=$2 mode=$3 ports
  ports=$({ printf '%s\n' "${PORTS[@]}"; if [[ $mode != all && $ACTION != firewall-clear && $ACTION != firewall-disable ]]; then nft_owned_ports < "$input"; fi; } | awk -v remove="$([[ $ACTION == firewall-edit || $ACTION == firewall-delete ]] && echo "$PORT")" 'NF && $1!=remove' | sort -nu | paste -sd,)
@@ -485,13 +419,6 @@ nft_build() {
 backend_change() {
  local mode=owned source_tx=$TX zone p prop value
  [[ $SCOPE != all || ($ACTION != firewall-clear && $ACTION != firewall-disable) ]] || mode=all
- if [[ $ACTION == firewall-restore ]]; then
-  source_tx=$STATE/transactions/$RESTORE_ID
-  # Stop before replacing its permanent tree; starting/reloading happens only
-  # after the selected backup has received offline SSH protection.
-  if [[ $BACKEND == firewalld && $FW_RUNNING == 1 ]]; then os systemctl stop firewalld; fi
-  restore_firewall_files "$source_tx"
- fi
  case $BACKEND in
   nftables)
    nft_build "$source_tx/nft.runtime" "$TX/nft.new" "$mode"
@@ -524,11 +451,6 @@ backend_change() {
      cp "$TX/ufw4.new" "$ROOT/etc/ufw/before.rules"
      cp "$TX/ufw6.new" "$ROOT/etc/ufw/before6.rules"
     fi
-    if [[ $ACTION == firewall-restore ]]; then
-     restore_manager_enabled "$source_tx" ufw
-     if grep -q '^ufw 1 ' "$source_tx/services"; then os systemctl start ufw; else os systemctl stop ufw; fi
-     if grep -qx 'ENABLED=yes' "$ROOT/etc/ufw/ufw.conf"; then os ufw --force enable; else os ufw --force disable; fi
-    fi
    else persist_iptables "$mode"; fi
    os iptables-restore < "$TX/v4.new"
    os ip6tables-restore < "$TX/v6.new";;
@@ -542,21 +464,6 @@ backend_change() {
     done < "$STATE/firewalld.owned"
     awk -v p="$PORT" '$3!=p' "$STATE/firewalld.owned" > "$TX/firewalld.owned.new"
     cp "$TX/firewalld.owned.new" "$STATE/firewalld.owned"
-   fi
-   if [[ $ACTION == firewall-restore ]]; then
-    # Restore permanent tree from the selected backup, and reconstruct its
-    # independent runtime values. Never runtime-to-permanent.
-    restore_manager_enabled "$source_tx" firewalld
-    if ! grep -q '^firewalld 1 ' "$source_tx/services"; then os systemctl stop firewalld; return 0; fi
-    FW_ZONES=$(cat "$source_tx/fw.zones")
-    [[ -n $FW_ZONES ]] || die 'active firewalld snapshot has no zones'
-    for zone in $FW_ZONES; do
-     [[ $zone =~ ^[A-Za-z0-9_-]+$ ]] || die 'invalid saved zone'
-     for p in "${PORTS[@]}"; do os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --zone="$zone" --add-port="$p/tcp" >/dev/null; done
-    done
-    os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --check-config >/dev/null
-    os systemctl start firewalld
-    local current_tx=$TX; TX=$source_tx; fw_reconcile 1; TX=$current_tx
    fi
    if [[ $mode == all ]]; then
     if [[ $ACTION == firewall-disable ]]; then
@@ -605,10 +512,6 @@ backend_change() {
     done
    fi;;
  esac
-}
-restore_manager_enabled() {
- local saved=$1 service=$2
- if grep -q "^$service [01] 1$" "$saved/services"; then os systemctl enable "$service"; else os systemctl disable "$service"; fi
 }
 protected_port() { local p; for p in "${PROTECTED_PORTS[@]}"; do [[ $p != "$1" ]] || return 0; done; return 1; }
 fw_port_unowned_or_inconsistent() {

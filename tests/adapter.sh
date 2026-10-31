@@ -6,7 +6,12 @@ cmd=$1; shift
 printf '%s' "$cmd" >> "$F/log"; printf ' <%s>' "$@" >> "$F/log"; printf '\n' >> "$F/log"
 bad() { echo "UNEXPECTED adapter command: $cmd $*" >&2; exit 97; }
 mutation() {
- [[ -f $F/timer-ready || ${GUARD_RECOVERING:-} == 1 ]] || { echo 'network write before timer verified' >&2; exit 96; }
+ local latest transaction
+ [[ -f $R/var/lib/server-guard/latest ]] || { echo 'network write before backup prepared' >&2; exit 96; }
+ latest=$(cat "$R/var/lib/server-guard/latest")
+ [[ $latest =~ ^[0-9]{14}-[a-f0-9]{16}$ ]] || exit 96
+ transaction=$R/var/lib/server-guard/transactions/$latest
+ [[ -f $transaction/checksums && $(cat "$transaction/result") == running ]] || exit 96
  printf 'MUTATE %s %s\n' "$cmd" "$*" >> "$F/log"
 }
 backend=$(cat "$F/backend")
@@ -65,25 +70,25 @@ case $cmd in
    'is-system-running') [[ ! -f $F/systemd ]] || exit 1; echo running;;
    'is-active --quiet ssh.socket'|'is-enabled --quiet ssh.socket') [[ -f $F/socket ]] || exit 3;;
    'is-active --quiet sshd.socket'|'is-enabled --quiet sshd.socket') exit 3;;
-   'is-active --quiet server-guard-rollback.timer') [[ ! -f $F/timer-fail ]] || exit 3; touch "$F/timer-ready";;
-   'is-enabled --quiet server-guard-boot.service') [[ ! -f $F/timer-fail ]] || exit 1;;
-   'show --property=NextElapseUSecRealtime --value server-guard-rollback.timer')
-    if [[ -f $F/se-before-apply-conflict ]]; then printf 'http_port_t tcp 2299\n' >> "$F/se-local"; fi
-    date -u -d '+180 seconds' '+%a %Y-%m-%d %H:%M:%S UTC';;
    'is-active --quiet firewalld'|'is-active --quiet ufw'|'is-active --quiet nftables'|'is-active --quiet netfilter-persistent'|'is-active --quiet iptables'|'is-active --quiet ip6tables')
     s=${*: -1}; [[ $(cat "$F/services/$s.active") == 1 || ($s == firewalld && -f $F/conflict) ]] || exit 3;;
    'is-active --quiet ssh'|'is-active --quiet sshd') :;;
    'is-active --quiet fail2ban') [[ $(cat "$F/services/fail2ban.active") == 1 ]] || exit 3;;
    'is-enabled --quiet fail2ban'|'is-enabled --quiet nftables'|'is-enabled --quiet netfilter-persistent'|'is-enabled --quiet iptables'|'is-enabled --quiet ip6tables'|'is-enabled --quiet ufw'|'is-enabled --quiet firewalld') s=${*: -1}; [[ $(cat "$F/services/$s.enabled") == 1 ]] || exit 1;;
    'daemon-reload') :;;
-   'enable server-guard-boot.service'|'disable server-guard-boot.service') service_link "$1" "$2";;
-   'enable --now server-guard-rollback.timer'|'disable --now server-guard-rollback.timer') service_link "$1" "$3"; if [[ $1 == disable ]]; then rm -f "$F/timer-ready"; fi;;
+   'disable --now server-guard-rollback.timer'|'disable --now server-guard-boot.service')
+    [[ ! -f $F/legacy-disable-fail ]] || exit 1
+    printf 'LEGACY %s\n' "$*" >> "$F/log"
+    service_link disable "$3";;
+   'stop server-guard-rollback.service')
+    [[ ! -f $F/legacy-disable-fail ]] || exit 1
+    printf 'LEGACY %s\n' "$*" >> "$F/log";;
    'cat netfilter-persistent') [[ ! -f $F/missing-netfilter-persistent ]] || exit 1; echo '[Service]';;
    'cat nftables'|'cat iptables ip6tables') echo '[Service]';;
    'reload ssh'|'reload sshd'|'reload-or-restart fail2ban')
     mutation "$@"
     if [[ $* == 'reload-or-restart fail2ban' ]]; then echo 1 > "$F/services/fail2ban.active"; fi
-    if [[ -f $F/ssh-reload-fail && ${GUARD_RECOVERING:-} != 1 ]]; then exit 1; fi
+    if [[ -f $F/ssh-reload-fail ]]; then exit 1; fi
     if [[ -f $F/se-base ]]; then
      expected_context=system_u:object_r:sshd_config_t:s0
      [[ $(cat "$R/sys/fs/selinux/mls") != 0 ]] || expected_context=system_u:object_r:sshd_config_t
@@ -98,7 +103,7 @@ case $cmd in
  sshd)
   case ${1:-} in
    -T) [[ ! -f $F/sshd-T ]] || exit 1; printf 'port 2222\nport 2200\npasswordauthentication yes\n';;
-   -t) [[ ! -f $F/sshd-t ]] || exit 1; if [[ -f $F/new-sshd-invalid ]] && grep -q '^Port 2299$' "$R/etc/ssh/sshd_config"; then exit 1; fi;;
+   -t) [[ ! -f $F/sshd-t ]] || exit 1; if [[ -f $F/new-sshd-invalid ]] && grep -q '^Port 2299$' "${3:?}"; then exit 1; fi;;
    *) bad "$@";;
   esac;;
  ss)
@@ -124,7 +129,7 @@ case $cmd in
   [[ ! -f $F/context-write-fail ]] || exit 1
   [[ $3 != "$R/etc/ssh/sshd_config" ]] || printf '%s\n' "$2" > "$F/se-context";;
  restorecon)
-  [[ $# == 5 && $1 == -RF && $2 == "$R/var/lib/server-guard" && $3 == "$R/etc/systemd/system/server-guard-boot.service" && $4 == "$R/etc/systemd/system/server-guard-rollback.service" && $5 == "$R/etc/systemd/system/server-guard-rollback.timer" ]] || bad "$@"
+  [[ $# == 2 && $1 == -RF && $2 == "$R/var/lib/server-guard" ]] || bad "$@"
   [[ ! -f $F/labels-fail ]] || exit 1
   touch "$F/labels-ready";;
  matchpathcon)

@@ -37,34 +37,22 @@ run plan fail2ban-enable --maxretry 4 --findtime 900 --bantime 7200 > "$work/pla
 grep -q 'maxretry=4 findtime=900 bantime=7200' "$work/plan"
 [[ ! -e $GUARD_TEST_ROOT/var/lib/server-guard ]]
 run apply fail2ban-enable --maxretry 4 --findtime 900 --bantime 7200 --apply >/dev/null
-grep -qx 'maxretry = 4' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
+first=$(backup_of)
+run apply fail2ban-disable --apply >/dev/null
+run apply fail2ban-enable --maxretry 6 --apply >/dev/null
+grep -qx 'maxretry = 6' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
 grep -qx 'findtime = 900' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
 grep -qx 'bantime = 7200' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
 grep -q '2001:db8::20' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
 [[ $(cat "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/user.local") == $'[other-jail]\nenabled=true' ]]
-saved=$(id_of)
 SSH_CONNECTION='' run backups > "$work/backups"
-grep -q "id=$saved .*status=pending integrity=ok" "$work/backups"
+grep -q "id=$first .*status=applied integrity=ok" "$work/backups"
 ! grep -q '2001:db8' "$work/backups"
-confirmed
-run apply fail2ban-disable --apply >/dev/null
-grep -qx 'maxretry = 4' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
-grep -qx 'bantime = 7200' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
-rollback
-run apply fail2ban-enable --maxretry 6 --apply >/dev/null
-grep -qx 'maxretry = 6' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
-grep -qx 'bantime = 7200' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
-rollback
+echo corrupt >> "$GUARD_TEST_ROOT/var/lib/server-guard/transactions/$first/meta"
 run backups > "$work/backups"
-grep -q "id=$saved .*status=confirmed integrity=ok" "$work/backups"
-grep -q 'status=rolled-back integrity=ok' "$work/backups"
-grep -qx 'maxretry = 4' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
-echo corrupt >> "$GUARD_TEST_ROOT/var/lib/server-guard/transactions/$saved/meta"
-run backups > "$work/backups"
-grep -qx "id=$saved integrity=invalid" "$work/backups"
-! grep -q "id=$saved .*integrity=ok" "$work/backups"
-ok 'Custom Fail2ban policy preserves management source and other jails; backup listing validates integrity and tracks rollback'
-
+grep -qx "id=$first integrity=invalid" "$work/backups"
+no_recovery
+ok 'Custom policy survives disable/enable without confirmation; backup listing validates integrity and hides SSH addresses'
 reset_fixture
 for setting in '--maxretry 0' '--maxretry 101' '--findtime 604801' '--bantime 31536001' '--bantime -1' '--findtime 1h' '--maxretry 01' '--maxretry 999999999999999999999'; do
  read -r option value <<< "$setting"
@@ -75,20 +63,4 @@ reject plan fail2ban-disable --maxretry 3
 reject plan ssh-port --port 2299 --bantime 600
 reject rules --bantime 600
 [[ ! -e $GUARD_TEST_ROOT/var/lib/server-guard ]]
-ok 'Out-of-range, malformed and misplaced Fail2ban options are rejected before creating state'
-
-reset_fixture
-printf '17\n3\n600\n3600\nN\n0\n' | run menu > "$work/menu-policy"
-grep -q 'maxretry=3 findtime=600 bantime=3600' "$work/menu-policy"
-[[ ! -e $GUARD_TEST_ROOT/var/lib/server-guard ]]
-printf '17\n\n\n\ny\n0\n' | run menu > "$work/menu-policy"
-grep -qx 'maxretry = 5' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
-grep -qx 'bantime = 3600' "$GUARD_TEST_ROOT/etc/fail2ban/jail.d/server-guard.local"
-rollback
-printf '18\n0\n' | run menu > "$work/menu-backups"
-grep -q 'integrity=ok' "$work/menu-backups"
-reset_fixture ufw
-printf '16\n0\n' | run menu > "$work/menu-rules"
-grep -q '8080/tcp' "$work/menu-rules"
-ok 'New menu entries inspect native rules/backups and preview/confirm a custom Fail2ban policy'
-echo 'PASS: reference-inspired features suite complete'
+ok 'Invalid and misplaced Fail2ban policy options are rejected before state creation'

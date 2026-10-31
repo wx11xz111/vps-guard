@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Independent, fail-closed SSH/firewall transactions. No panel dependency.
+# Independent SSH/firewall operations with backups. No panel dependency.
 set -Eeuo pipefail
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 umask 077
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-LANGUAGE=zh ROOT='' ADAPTER='' MODE=${1:-menu} ACTION='' PORT='' TO_PORT='' ID='' SCOPE=owned APPLY=0 DRY=0 TIMEOUT=180 BACKEND_REQUEST='' MENU_EXTRA=0
+LANGUAGE=zh ROOT='' ADAPTER='' MODE=${1:-menu} ACTION='' PORT='' TO_PORT='' ID='' SCOPE=owned APPLY=0 DRY=0 BACKEND_REQUEST='' MENU_EXTRA=0
 F2B_MAXRETRY='' F2B_FINDTIME='' F2B_BANTIME='' F2B_OPTIONS=0
 F2B_INSTALL=0
 [[ $# == 0 ]] || shift
@@ -52,28 +52,27 @@ while (($#)); do
  case $1 in
   --apply) APPLY=1; MENU_EXTRA=1; shift;;
   --dry-run) DRY=1; MENU_EXTRA=1; shift;;
-  --lang|--port|--to-port|--id|--scope|--timeout|--backend|--maxretry|--findtime|--bantime)
+  --lang|--port|--to-port|--scope|--backend|--maxretry|--findtime|--bantime)
    (($# >= 2)) || die 'missing option value / 缺少参数值'
    case $1 in --maxretry|--findtime|--bantime) [[ -n $2 ]] || die 'missing Fail2ban option value / 缺少封禁参数值';; esac
-   case $1 in --lang) LANGUAGE=$2;; --port) PORT=$2; MENU_EXTRA=1;; --to-port) TO_PORT=$2; MENU_EXTRA=1;; --id) ID=$2; MENU_EXTRA=1;; --scope) SCOPE=$2; MENU_EXTRA=1;; --timeout) TIMEOUT=$2; MENU_EXTRA=1;; --backend) BACKEND_REQUEST=$2; MENU_EXTRA=1;;
+   case $1 in --lang) LANGUAGE=$2;; --port) PORT=$2; MENU_EXTRA=1;; --to-port) TO_PORT=$2; MENU_EXTRA=1;; --scope) SCOPE=$2; MENU_EXTRA=1;; --backend) BACKEND_REQUEST=$2; MENU_EXTRA=1;;
     --maxretry) F2B_MAXRETRY=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
     --findtime) F2B_FINDTIME=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
     --bantime) F2B_BANTIME=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
    esac; shift 2;;
-  firewall-setup|firewall-allow|firewall-edit|firewall-delete|firewall-disable|firewall-clear|firewall-restore|ssh-port|fail2ban-enable|fail2ban-disable)
+  firewall-setup|firewall-allow|firewall-edit|firewall-delete|firewall-disable|firewall-clear|ssh-port|fail2ban-enable|fail2ban-disable)
    [[ -z $ACTION ]] || die 'only one action / 每次仅一个动作'; ACTION=$1; shift;;
   *) die 'unknown argument / 未知参数';;
  esac
 done
 [[ $LANGUAGE == zh || $LANGUAGE == en ]] || die 'language must be zh/en'
 [[ $SCOPE == owned || $SCOPE == all ]] || die 'scope must be owned/all'
-[[ $TIMEOUT =~ ^[0-9]{2,4}$ ]] && ((10#$TIMEOUT >= 30 && 10#$TIMEOUT <= 3600)) || die 'timeout must be 30..3600 seconds'
 [[ -z $PORT ]] || port_valid "$PORT" || die 'invalid port / 端口无效'
 [[ -z $TO_PORT ]] || port_valid "$TO_PORT" || die 'invalid destination port / 新端口无效'
 [[ -z $TO_PORT || $ACTION == firewall-edit ]] || die '--to-port is only for firewall-edit'
-[[ -z $ID ]] || id_valid "$ID" || die 'invalid transaction id / 事务编号无效'
 [[ -z $BACKEND_REQUEST || $BACKEND_REQUEST =~ ^(nftables|iptables|ufw|firewalld)$ ]] || die 'invalid backend'
-[[ $MODE =~ ^(menu|status|ports|rules|backups|plan|apply|confirm|rollback|recover)$ ]] || die 'use menu/status/ports/rules/backups/plan/apply/confirm/rollback'
+case $MODE in confirm|rollback) die 'Confirmation and rollback commands were removed; successful changes take effect immediately / 确认和回退命令已取消，成功执行后直接生效';; esac
+[[ $MODE =~ ^(menu|status|ports|rules|backups|plan|apply|recover)$ ]] || die 'use menu/status/ports/rules/backups/plan/apply'
 if ((F2B_OPTIONS)); then
  [[ ($MODE == plan || $MODE == apply) && $ACTION == fail2ban-enable ]] || die 'Fail2ban options require plan/apply fail2ban-enable / 封禁参数仅用于启用Fail2ban'
  for setting in "$F2B_MAXRETRY:100" "$F2B_FINDTIME:604800" "$F2B_BANTIME:31536000"; do
@@ -175,17 +174,6 @@ discover() {
 }
 preflight() {
  platform; secure_paths; discover
- local running
- [[ -d $ROOT/run/systemd/system ]] || die 'persistent systemd rollback required'
- running=$(os systemctl is-system-running 2>/dev/null) || [[ $running == degraded ]] || die 'systemd unavailable'
- [[ $running == running || $running == degraded ]] || die 'systemd unavailable'
- if [[ $ACTION == firewall-restore ]]; then
-  [[ -n $ID ]] || die '--id required'; valid_transaction "$ID"
-  local saved_backend; saved_backend=$(sed -n '2p' "$STATE/transactions/$ID/meta")
-  [[ $saved_backend =~ ^(nftables|iptables|ufw|firewalld)$ ]] || die 'invalid saved backend'
-  [[ -z $BACKEND_REQUEST || $BACKEND_REQUEST == "$saved_backend" ]] || die 'restore backend mismatch'
-  BACKEND_REQUEST=$saved_backend
- fi
  if [[ $ACTION == fail2ban-* ]]; then
   [[ -z $BACKEND_REQUEST ]] || die '--backend is not used for Fail2ban / Fail2ban操作无需防火墙后端'
   BACKEND=none
@@ -225,7 +213,6 @@ preflight() {
   else need fail2ban-client fail2ban fail2ban; fi
  fi
  [[ $ACTION != firewall-allow || -n $PORT ]] || die '--port required'
- if [[ $ACTION == firewall-restore ]]; then [[ -n $ID ]] || die '--id required'; valid_transaction "$ID"; [[ $(sed -n '2p' "$STATE/transactions/$ID/meta") == "$BACKEND" ]] || die 'restore backend mismatch'; fi
 }
 install_fail2ban() (
  local masked=0 enabled
@@ -250,28 +237,28 @@ install_fail2ban() (
   os dnf -y install fail2ban-server python3-systemd || die 'Fail2ban installation failed; check enabled repositories (EPEL on RHEL family) / 安装失败，请检查已启用的软件源，RHEL系列通常需要EPEL'
  fi
  need fail2ban-client fail2ban fail2ban-server
- # A newly installed package stays stopped/disabled until the guarded transaction.
+ # Keep the service stopped until its configuration has been prepared.
  if [[ $enabled != enabled ]]; then os systemctl disable fail2ban || die 'cannot preserve disabled Fail2ban state / 无法保留Fail2ban停用状态'; fi
  os fail2ban-client -t >/dev/null || die 'Installed Fail2ban configuration is invalid; package retained, service not started / 安装后配置校验失败，保留软件包且未启动服务，请检查其他jail配置'
  os systemctl unmask --runtime fail2ban || die 'cannot remove temporary Fail2ban mask / 无法移除Fail2ban临时屏蔽'
  masked=0
- say 'Fail2ban installed; preparing the guarded configuration change.' 'Fail2ban已安装，正在准备受保护的配置变更。' success
+ say 'Fail2ban installed; preparing the configuration change.' 'Fail2ban已安装，正在准备配置变更。' success
 )
 lock_state() {
  mkdir -p "$STATE/transactions"; chmod 700 "$STATE" "$STATE/transactions"
  exec 9> "$STATE/lock"; flock -n 9 || die 'another server-guard process holds the lock'
 }
-valid_transaction() {
- id_valid "$1" || die 'invalid transaction id'
+valid_backup() {
+ id_valid "$1" || die 'invalid backup id'
  local saved=$STATE/transactions/$1
- [[ -f $saved/meta && -f $saved/config.tar && -f $saved/services && -f $saved/checksums ]] || die 'transaction backup incomplete'
- (cd "$saved" && sha256sum --check --status checksums) || die 'transaction checksum mismatch / 备份完整性校验失败'
- if [[ $(sed -n '5p' "$saved/meta") =~ ^schema-[23]$ && $(sed -n '1p' "$saved/meta") == ssh-port ]]; then
+ [[ -f $saved/meta && -f $saved/config.tar && -f $saved/services && -f $saved/checksums ]] || die 'backup incomplete'
+ (cd "$saved" && sha256sum --check --status checksums) || die 'backup checksum mismatch / 备份完整性校验失败'
+ if [[ $(sed -n '5p' "$saved/meta") =~ ^schema-[234]$ && $(sed -n '1p' "$saved/meta") == ssh-port ]]; then
   local f
   for f in meta full local export target target-local; do
    [[ -f $saved/selinux.$f ]] && grep -Eq "^[a-f0-9]{64}  selinux\.$f$" "$saved/checksums" || die 'SELinux snapshot incomplete / SELinux快照不完整'
   done
-  if [[ $(sed -n '5p' "$saved/meta") == schema-3 ]]; then
+  if [[ $(sed -n '5p' "$saved/meta") =~ ^schema-[34]$ ]]; then
    for f in active target-active; do
     [[ -f $saved/selinux.$f ]] && grep -Eq "^[a-f0-9]{64}  selinux\.$f$" "$saved/checksums" || die 'SELinux complete context snapshot missing / SELinux完整上下文快照缺失'
    done
@@ -282,26 +269,30 @@ valid_transaction() {
 list_backups() {
  local saved transaction action backend status pending='' found=0
  [[ ! -f $STATE/pending ]] || pending=$(cat "$STATE/pending")
- say 'Backup IDs begin with their UTC creation time. Restore uses the state BEFORE that change.' '备份编号前14位为UTC创建时间；恢复使用该次变更前的状态。'
+ say 'Backup IDs begin with their UTC creation time. Backups contain the state before each operation.' '备份编号前14位为UTC创建时间；备份保存每次操作前的状态。'
  for saved in "$STATE"/transactions/*; do
   [[ -d $saved ]] || continue
   transaction=${saved##*/}; id_valid "$transaction" || continue
   found=1
-  if ! (valid_transaction "$transaction") >/dev/null 2>&1; then
+  if ! (valid_backup "$transaction") >/dev/null 2>&1; then
    ui_printf error 'id=%s integrity=invalid\n' "$transaction"
    continue
   fi
   action=$(sed -n '1p' "$saved/meta"); backend=$(sed -n '2p' "$saved/meta")
   # Do not render arbitrary backup metadata as terminal text.
-  case $action in firewall-allow|firewall-edit|firewall-delete|firewall-clear|firewall-disable|firewall-restore|ssh-port|fail2ban-enable|fail2ban-disable) :;; *) action=unknown;; esac
+  case $action in firewall-allow|firewall-edit|firewall-delete|firewall-clear|firewall-disable|ssh-port|fail2ban-enable|fail2ban-disable) :;; *) action=unknown;; esac
   case $backend in nftables|iptables|ufw|firewalld|none) :;; *) backend=unknown;; esac
   status=saved
   if [[ -f $STATE/audit.log ]]; then
-   status=$(awk -v id="$transaction" '$3==id && $2~/^(applied|confirmed|rolled-back|rollback-failed)$/ {s=$2} END {print (s=="" ? "saved" : s)}' "$STATE/audit.log")
+   status=$(awk -v id="$transaction" '$3==id && $2~/^(applied|failed|retained|confirmed|rolled-back|rollback-failed)$/ {s=$2} END {print (s=="" ? "saved" : s)}' "$STATE/audit.log")
+  fi
+  if [[ -f $saved/result ]]; then
+   local result; result=$(cat "$saved/result")
+   case $result in running|applied|failed) status=$result;; esac
   fi
   [[ $transaction != "$pending" ]] || status=pending
   local tone=info
-  case $status in pending) tone=warning;; confirmed) tone=success;; rollback-failed) tone=error;; esac
+  case $status in pending|running) tone=warning;; applied|retained|confirmed) tone=success;; failed|rollback-failed) tone=error;; esac
   ui_printf "$tone" 'id=%s action=%s backend=%s status=%s integrity=ok\n' "$transaction" "$action" "$backend" "$status"
  done
  ((found)) || say 'No backups.' '暂无备份。'
@@ -332,125 +323,84 @@ snapshot() {
   esac
  )
 }
-arm() {
- mkdir -p "$STATE/runner" "$UNITS"
- if [[ $HERE != "$STATE/runner" ]]; then cp -- "$HERE/server-guard.sh" "$HERE/backends.sh" "$HERE/selinux.sh" "$STATE/runner/"; fi
- chmod 700 "$STATE/runner"; chmod 600 "$STATE/runner/"*.sh
- # Fixed production path; adapters are passed only in fixture units, never evaluated.
- local exec_line='/bin/bash /var/lib/server-guard/runner/server-guard.sh recover --apply' calendar next environment=''
- if [[ -n $ROOT ]]; then exec_line="/bin/bash \"$STATE/runner/server-guard.sh\" recover --apply"; fi
- if [[ -n $ROOT ]]; then environment="Environment=\"GUARD_TEST_ROOT=$ROOT\" \"GUARD_TEST_ADAPTER=$ADAPTER\""; fi
- calendar=$(date -u -d "+$TIMEOUT seconds" '+%Y-%m-%d %H:%M:%S UTC')
- date -d "$calendar" +%s > "$TX/deadline"
- for unit in server-guard-rollback.service server-guard-boot.service; do
-  cat > "$UNITS/$unit" <<EOF
-[Unit]
-Description=Server Guard pending transaction recovery
-After=network.target
-[Service]
-Type=oneshot
-$environment
-ExecStart=$exec_line
-Restart=on-failure
-RestartSec=30s
-UMask=0077
-[Install]
-WantedBy=multi-user.target
-EOF
- done
- cat > "$UNITS/server-guard-rollback.timer" <<EOF
-[Unit]
-Description=Server Guard confirmation deadline
-[Timer]
-OnCalendar=$calendar
-Persistent=true
-AccuracySec=1s
-Unit=server-guard-rollback.service
-[Install]
-WantedBy=timers.target
-EOF
- chmod 600 "$UNITS/server-guard-boot.service" "$UNITS/server-guard-rollback.service" "$UNITS/server-guard-rollback.timer"
- se_labels
- os systemctl daemon-reload
- os systemctl enable server-guard-boot.service
- os systemctl enable --now server-guard-rollback.timer
- os systemctl is-enabled --quiet server-guard-boot.service
- os systemctl is-active --quiet server-guard-rollback.timer
- next=$(os systemctl show --property=NextElapseUSecRealtime --value server-guard-rollback.timer)
- [[ -n $next && $next != n/a && $(date -d "$next" +%s) -gt $(date +%s) ]]
-}
-disarm() {
- os systemctl disable --now server-guard-rollback.timer
- os systemctl disable server-guard-boot.service
- # Keep recovery units and runner on disk for audit/retry; disabled after success.
-}
-restore_services() {
- local s active enabled
- while read -r s active enabled; do
-  case $s in nftables|netfilter-persistent|iptables|ip6tables|ufw|firewalld|fail2ban) :;; *) return 1;; esac
-  [[ $active =~ ^[01]$ && $enabled =~ ^[01]$ ]] || return 1
-  # Only affected services; never start unrelated firewalls.
-  case "$BACKEND:$s:$OLD_ACTION" in
-   nftables:nftables:*|iptables:netfilter-persistent:*|iptables:iptables:*|iptables:ip6tables:*|ufw:ufw:*|firewalld:firewalld:*|*:fail2ban:fail2ban-*) ;;
-   *) continue;;
+retire_legacy_recovery() {
+ local unit changed=0 pending='' archived
+ # Only cancel this tool's legacy jobs; never restore firewall/SSH state.
+ for unit in server-guard-rollback.timer server-guard-rollback.service server-guard-boot.service; do
+  [[ -f $UNITS/$unit ]] || continue
+  case $unit in
+   *.timer|server-guard-boot.service) os systemctl disable --now "$unit" || return;;
+   *) os systemctl stop "$unit" || return;;
   esac
-  if [[ $BACKEND == iptables ]]; then
-   if [[ -f $TX/family && $(cat "$TX/family") == debian && ($s == iptables || $s == ip6tables) ]]; then continue; fi
-   if [[ -f $TX/family && $(cat "$TX/family") == rhel && $s == netfilter-persistent ]]; then continue; fi
+  changed=1
+ done
+ if [[ -f $STATE/pending ]]; then
+  pending=$(cat "$STATE/pending") || return
+  archived=$(mktemp "$STATE/legacy-pending.XXXXXXXX") || return
+  mv -- "$STATE/pending" "$archived" || return
+  id_valid "$pending" || pending=unknown
+  printf '%s retained %s\n' "$(date -u +%FT%TZ)" "$pending" >> "$STATE/audit.log" || return
+  changed=1
+ fi
+ if ((changed)); then
+  printf 'immediate-v1\n' > "$STATE/workflow" || return
+  say 'Legacy confirmation/recovery jobs retired; current settings and backups retained.' '旧确认及回退任务已停用，保留当前配置和备份。' success
+ fi
+}
+legacy_recovery_present() {
+ [[ -f $STATE/pending ]] && return 0
+ if [[ -f $STATE/workflow && $(cat "$STATE/workflow") == immediate-v1 ]]; then return 1; fi
+ local unit
+ for unit in server-guard-rollback.timer server-guard-rollback.service server-guard-boot.service; do
+  [[ ! -f $UNITS/$unit ]] || return 0
+ done
+ return 1
+}
+apply_change() (
+ # The lock prevents two running operations, not successive completed changes.
+ lock_state
+ if legacy_recovery_present; then retire_legacy_recovery || die 'Cannot retire legacy recovery jobs / 无法停用旧回退任务'; fi
+ preflight
+ if ((F2B_INSTALL)); then install_fail2ban; preflight; fi
+ ID=$(date -u +%Y%m%d%H%M%S)-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+ TX=$STATE/transactions/$ID; mkdir "$TX"
+ printf '%s\n%s\n%s\n%s\nschema-4\n' "$ACTION" "$BACKEND" "$PORT" "$SSH_CONNECTION" > "$TX/meta"
+ printf '%s\n' "$FAMILY" > "$TX/family"
+ operation_failed() {
+  local rc=$?
+  trap - EXIT
+  if ((rc)); then
+   printf 'failed\n' > "$TX/result"
+   printf '%s failed %s %s\n' "$(date -u +%FT%TZ)" "$ID" "$ACTION" >> "$STATE/audit.log"
+   say "Operation failed; no automatic rollback. Backup: $ID" "操作失败，未自动回退。备份编号：$ID" error >&2
   fi
-  if [[ $enabled == 1 ]]; then os systemctl enable "$s" || return; else os systemctl disable "$s" || return; fi
-  if [[ $active == 1 ]]; then os systemctl start "$s" || return; else os systemctl stop "$s" || return; fi
- done < "$TX/services"
-}
-restore_transaction() {
- local p
- OLD_ACTION=$(sed -n '1p' "$TX/meta"); BACKEND=$(sed -n '2p' "$TX/meta")
- [[ $BACKEND =~ ^(nftables|iptables|ufw|firewalld)$ || ($BACKEND == none && $OLD_ACTION == fail2ban-*) ]] || return 1
- export GUARD_RECOVERING=1
- if [[ $BACKEND == none ]]; then
-  p=etc/fail2ban/jail.d/server-guard.local
-  rm -f -- "$ROOT/$p" || return
-  if grep -Fxq "$p" "$TX/paths"; then os tar --selinux -C "${ROOT:-/}" -xf "$TX/config.tar" -- "$p" || return; fi
- else
-  for p in "${CONFIG_PATHS[@]}"; do rm -rf -- "$ROOT/${p:?}" || return; done
-  os tar --selinux -C "${ROOT:-/}" -xf "$TX/config.tar" || return
- fi
- restore_services || return
- backend_restore || return
- if [[ $OLD_ACTION == ssh-port ]]; then
-  se_restore_context || return
-  os sshd -t -f "$ROOT/etc/ssh/sshd_config" && reload_ssh || return
-  se_rollback || return
- fi
- if [[ $OLD_ACTION == fail2ban-* ]]; then
-  os fail2ban-client -t >/dev/null || return
-  if grep -q '^fail2ban 1 ' "$TX/services"; then os systemctl reload-or-restart fail2ban || return; fi
- fi
-}
-recover_locked() {
- [[ -f $STATE/pending ]] || return 0
- local pending; pending=$(cat "$STATE/pending"); valid_transaction "$pending"
- [[ -z $ID || $ID == "$pending" ]] || die 'id is not the pending transaction'
- TX=$STATE/transactions/$pending
- if restore_transaction; then
-  printf '%s rolled-back %s\n' "$(date -u +%FT%TZ)" "$pending" >> "$STATE/audit.log"
-  rm -- "$STATE/pending"; disarm
-  say "Rolled back: $pending" "已回退：$pending" success
- else
-  printf '%s rollback-failed %s\n' "$(date -u +%FT%TZ)" "$pending" >> "$STATE/audit.log"
-  say 'Recovery failed; pending state and timer retained for retry.' '回退失败；保留待确认状态和独立回退任务以便重试。' >&2
-  return 1
- fi
-}
+  exit "$rc"
+ }
+ trap operation_failed EXIT
+ snapshot
+ se_labels
+ printf 'running\n' > "$TX/result"
+ printf '%s\n' "$ID" > "$STATE/latest"
+ sync -f "$STATE"
+ mutate
+ if [[ $ACTION == ssh-port ]]; then se_verify || die 'SELinux verification failed / SELinux授权核对失败'; fi
+ printf 'applied\n' > "$TX/result"
+ printf '%s applied %s %s\n' "$(date -u +%FT%TZ)" "$ID" "$ACTION" >> "$STATE/audit.log"
+ trap - EXIT
+ say "Applied. Backup: $ID" "已生效。备份编号：$ID" success
+)
 reload_ssh() { if os systemctl is-active --quiet ssh; then os systemctl reload ssh; elif os systemctl is-active --quiet sshd; then os systemctl reload sshd; else return 1; fi; }
 mutate() {
- if [[ $ACTION == ssh-port ]]; then se_apply; fi
+ if [[ $ACTION == ssh-port ]]; then
+  local p
+  { for p in "${PORTS[@]}"; do printf 'Port %s\n' "$p"; done; cat "$ROOT/etc/ssh/sshd_config"; } > "$TX/sshd.new"
+  os sshd -t -f "$TX/sshd.new"
+  se_apply
+ fi
  backend_change
  case $ACTION in
   ssh-port)
    # Prepend global Ports before any Include/Match; preserve all existing ports.
-   local p
-   { for p in "${PORTS[@]}"; do printf 'Port %s\n' "$p"; done; cat "$ROOT/etc/ssh/sshd_config"; } > "$TX/sshd.new"
    cp -- "$TX/sshd.new" "$ROOT/etc/ssh/sshd_config"
    se_restore_context
    os sshd -t -f "$ROOT/etc/ssh/sshd_config"
@@ -484,7 +434,7 @@ mutate() {
      if os fail2ban-client status server-guard-sshd >/dev/null 2>&1; then ready=1; break; fi
      sleep 1
     done
-    ((ready)) || die 'Fail2ban SSH jail did not start; rolling back / Fail2ban SSH防护未启动，正在回退'
+    ((ready)) || die 'Fail2ban SSH jail did not start / Fail2ban SSH防护未启动'
    elif os systemctl is-active --quiet fail2ban; then os systemctl reload-or-restart fail2ban; fi;;
  esac
 }
@@ -544,7 +494,7 @@ menu_fail2ban_policy() {
  menu_change fail2ban-enable --maxretry "$retries" --findtime "$window" --bantime "$duration"
 }
 menu() {
- local choice first second transaction
+ local choice first second
  if [[ ! -t 0 && -z $ADAPTER ]]; then die 'menu requires an interactive terminal / 菜单需要交互终端'; fi
  while :; do
   if [[ $LANGUAGE == en ]]; then
@@ -554,7 +504,6 @@ menu() {
    ui_printf success '6 SSH port  7 Install and enable Fail2ban  '; ui_printf warning '8 Disable Fail2ban\n'
    ui_printf info '9 Status\n'
    ui_printf error '10 Disable firewall  11 Clear owned ports  12 Clear all rules\n'
-   ui_printf warning '13 Restore firewall  '; ui_printf success '14 Confirm transaction  '; ui_printf warning '15 Roll back transaction\n'
    ui_printf info '16 Firewall rules  '; ui_printf success '17 Configure Fail2ban  '; ui_printf info '18 List backups\n'
    ui_printf muted '0 Exit\n'; ui_printf prompt 'Choose: '
   else
@@ -567,7 +516,6 @@ menu() {
    ui_printf section '\n【状态与维护】\n'
    ui_printf info ' 9 查看状态\n'
    ui_printf error '10 关闭防火墙    11 清空自有端口  12 清空全部规则\n'
-   ui_printf warning '13 恢复防火墙    '; ui_printf success '14 确认变更      '; ui_printf warning '15 手工回退\n'
    ui_printf info '16 查看完整规则  '; ui_printf success '17 配置防爆破    '; ui_printf info '18 查看备份\n'
    ui_printf muted ' 0 退出\n'; ui_printf prompt '请选择：'
   fi
@@ -610,20 +558,7 @@ menu() {
    10) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。' error;;
    11) menu_change firewall-clear || say 'Action failed.' '操作失败。' error;;
    12) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。' error;;
-   13|14|15)
-    if [[ $LANGUAGE == en ]]; then ui_printf prompt 'Transaction ID: '; else ui_printf prompt '事务编号：'; fi
-    menu_read || return 0; transaction=$REPLY
-    case $choice in
-     13) menu_change firewall-restore --id "$transaction" || say 'Action failed.' '操作失败。' error;;
-     14)
-      if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。' error; continue; fi
-      if ! menu_confirm "Keep changes for $transaction?" "是否确认保留事务 $transaction 的变更？"; then say 'Cancelled.' '已取消。' muted; continue; fi
-      menu_invoke confirm --id "$transaction" --apply || say 'Confirmation failed.' '确认失败。' error;;
-     15)
-      if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。' error; continue; fi
-      if ! menu_confirm "Roll back transaction $transaction?" "是否回退事务 $transaction？"; then say 'Cancelled.' '已取消。' muted; continue; fi
-      menu_invoke rollback --id "$transaction" --apply || say 'Rollback failed.' '回退失败。' error;;
-    esac;;
+   13|14|15) say 'Restore, confirmation and rollback menus were removed. Changes take effect immediately.' '恢复、确认和回退菜单已取消，成功执行后直接生效。' warning;;
    *) say 'Unknown choice.' '选项无效。' warning;;
   esac
  done
@@ -631,16 +566,23 @@ menu() {
 if [[ $ACTION == firewall-setup ]]; then
  [[ $MODE == plan || $MODE == apply ]] || die 'firewall-setup requires plan/apply'
  [[ -z $PORT$TO_PORT$ID$BACKEND_REQUEST && $SCOPE == owned ]] || die 'firewall-setup takes no port/backend/id/scope'
+ if [[ $MODE == apply && $APPLY == 1 && $DRY == 0 ]] && legacy_recovery_present; then
+  (secure_paths; lock_state; retire_legacy_recovery) || die 'Cannot retire legacy recovery jobs / 无法停用旧回退任务'
+ fi
  setup_firewall
  exit
 fi
 if [[ $MODE == menu ]]; then
  [[ -z $ACTION && $MENU_EXTRA == 0 ]] || die 'menu takes only --lang / 菜单仅接受--lang'
+ if legacy_recovery_present; then
+  (secure_paths; lock_state; retire_legacy_recovery) || die 'Cannot retire legacy recovery jobs / 无法停用旧回退任务'
+ fi
  menu; exit
 fi
 if [[ $MODE == status ]]; then
  secure_paths
- if [[ -f $STATE/pending ]]; then ui_printf warning 'pending / 待确认: %s\n' "$(cat "$STATE/pending")"; else say 'No pending transaction.' '没有待确认事务。' success; fi
+ say 'Changes take effect immediately; no confirmation or automatic rollback.' '操作成功后直接生效，无需二次确认，不自动回退。' success
+ if legacy_recovery_present; then say 'Legacy recovery jobs will be retired on menu entry or the next apply.' '进入菜单或下次执行变更时将停用旧回退任务。' warning; fi
  exit
 fi
 if [[ $MODE == rules || $MODE == backups ]]; then
@@ -661,28 +603,16 @@ if [[ $MODE == ports ]]; then
  while read -r p; do [[ -z $p ]] || protected_port "$p" || printf 'owned tcp %s\n' "$p"; done <<< "$owned"
  exit
 fi
-if [[ $MODE == rollback || $MODE == recover ]]; then
- [[ $APPLY == 1 && $DRY == 0 ]] || die 'recovery requires --apply'
- secure_paths; [[ -d $STATE ]] || exit 0; lock_state; recover_locked; exit
-fi
-if [[ $MODE == confirm ]]; then
- [[ $APPLY == 1 && $DRY == 0 && -n $ID ]] || die 'confirm requires --id and --apply'
- secure_paths; [[ -d $STATE ]] || die 'no transaction'; lock_state; valid_transaction "$ID"
- [[ -f $STATE/pending && $(cat "$STATE/pending") == "$ID" ]] || die 'not pending'
- session; established; TX=$STATE/transactions/$ID
- deadline=$(cat "$TX/deadline")
- [[ $deadline =~ ^[0-9]+$ && $(date +%s) -lt $deadline ]] || die 'confirmation deadline passed; rollback required / 已过确认期限，请回退'
- old_session=$(sed -n '4p' "$TX/meta"); read -r old_client _ old_server _ <<< "$old_session"
- [[ $CLIENT == "$old_client" && $SERVER == "$old_server" && $SSH_CONNECTION != "$old_session" ]] || die 'confirm from a NEW SSH session at the same management source/server / 需要同管理来源的新SSH会话'
- if [[ $(sed -n '1p' "$TX/meta") == ssh-port ]]; then [[ $SESSION_PORT == "$(sed -n '3p' "$TX/meta")" ]] || die 'confirm must use new SSH port / 必须通过新端口确认'; fi
- se_confirm || die 'SELinux authorization changed; rollback required / SELinux授权变化，请检查并回退'
- printf '%s confirmed %s\n' "$(date -u +%FT%TZ)" "$ID" >> "$STATE/audit.log"
- rm -- "$STATE/pending"; disarm; say "Confirmed: $ID" "已确认：$ID" success; exit
+if [[ $MODE == recover ]]; then
+ [[ $APPLY == 1 && $DRY == 0 ]] || die 'legacy cleanup requires --apply'
+ secure_paths; [[ -d $STATE ]] || exit 0
+ lock_state; retire_legacy_recovery
+ exit
 fi
 [[ -n $ACTION ]] || die 'an action is required'
 preflight
 if [[ $MODE == plan || $DRY == 1 ]]; then
- ui_printf section 'backend=%s action=%s port=%s to_port=%s scope=%s protected_ports=%s timeout=%ss\n' "$BACKEND" "$ACTION" "$PORT" "$TO_PORT" "$SCOPE" "${PROTECTED_PORTS[*]}" "$TIMEOUT"
+ ui_printf section 'backend=%s action=%s port=%s to_port=%s scope=%s protected_ports=%s\n' "$BACKEND" "$ACTION" "$PORT" "$TO_PORT" "$SCOPE" "${PROTECTED_PORTS[*]}"
  if [[ $ACTION == fail2ban-enable ]]; then
   ui_printf info 'fail2ban maxretry=%s findtime=%s bantime=%s\n' "${F2B_MAXRETRY:-inherit}" "${F2B_FINDTIME:-inherit}" "${F2B_BANTIME:-inherit}"
   say 'findtime/bantime are seconds. Unspecified limits keep this jail values or system defaults.' 'findtime/bantime单位为秒；inherit沿用本工具已有值或系统默认值。'
@@ -690,34 +620,4 @@ if [[ $MODE == plan || $DRY == 1 ]]; then
  say 'Plan only; no files, services or firewall rules changed.' '仅预览；未修改文件、服务或防火墙规则。'; exit
 fi
 [[ $APPLY == 1 ]] || die 'mutation requires explicit --apply / 实际变更需显式--apply'
-lock_state
-[[ ! -f $STATE/pending ]] || die 'one pending transaction only; confirm or rollback it first'
-if ((F2B_INSTALL)); then install_fail2ban; preflight; fi
-RESTORE_ID=$ID # consumed by backends.sh
-ID=$(date -u +%Y%m%d%H%M%S)-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
-TX=$STATE/transactions/$ID; mkdir "$TX"
-printf '%s\n%s\n%s\n%s\nschema-3\n' "$ACTION" "$BACKEND" "$PORT" "$SSH_CONNECTION" > "$TX/meta"
-printf '%s\n' "$FAMILY" > "$TX/family"
-snapshot
-printf '%s\n' "$ID" > "$STATE/pending"
-# Compensation is installed before arming; network writes occur only after arm succeeds.
-NETWORK_STARTED=0
-on_error_exit() {
- local rc=$?
- trap - EXIT
- if ((rc)) && [[ -f $STATE/pending ]]; then
-  if [[ $NETWORK_STARTED == 1 ]]; then recover_locked || true
-  else rm -- "$STATE/pending"; disarm || true; fi
- fi
- exit "$rc"
-}
-trap on_error_exit EXIT
-arm
-sync -f "$STATE"
-sync -f "$UNITS"
-NETWORK_STARTED=1
-mutate
-printf '%s applied %s %s\n' "$(date -u +%FT%TZ)" "$ID" "$ACTION" >> "$STATE/audit.log"
-trap - EXIT
-ui_printf warning 'pending / 待确认: %s\n' "$ID"
-say 'Open a NEW SSH session and confirm --id ID --apply before the deadline. Old SSH ports remain allowed.' '请在截止前通过新的SSH会话执行 confirm --id 编号 --apply。旧SSH端口保留。' warning
+apply_change
