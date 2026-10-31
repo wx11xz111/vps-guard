@@ -1,0 +1,40 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+!.env.*.example
+.ssh/
+id_rsa
+id_ed25519
+*.key
+*.key.pem
+privkey*.pem
+private*.pem
+*.p12
+*.pfx
+
+# Runtime data, local backups and build output
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite3-shm
+*.sqlite3-wal
+*.bak
+*.backup
+*.dump
+*.swp
+*.tar.gz
+tmp/
+dist/
+coverage/
+
+# Local editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
