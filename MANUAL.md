@@ -1,8 +1,8 @@
 # 独立服务器保护工具 / Server Guard
 
-`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙操作还需要所选管理器的命令和持久化服务。菜单1可安装对应防火墙；其他缺失依赖仍需按提示安装。
+`./server-guard.sh` 是独立 Bash 工具，不依赖面板、数据库或原安装器。默认不改变系统；必须显式给出 `apply … --apply`。支持中文/英文提示（`--lang zh/en`），`plan` 和 `--dry-run` 只读。需要 root、Bash 4.4+、GNU coreutils/tar、flock、OpenSSH、ss、正常运行的 systemd；防火墙变更还需要所选管理器的命令和持久化服务。只读规则和端口查询不要求持久化服务。菜单1可安装对应防火墙；其他缺失依赖仍需按提示安装。
 
-目标发行版为 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；CentOS 7 明确拒绝。此版本已做隔离 Bash 事务和命令适配器验证，**尚未完成这些发行版上的真实公网 SSH、重启及防火墙内核验收**。不能据此承诺绝不掉线。实际使用前应准备云厂商救援控制台，并先在云安全组放行新端口；工具不能修改云安全组。
+目标发行版为 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；CentOS 7 明确拒绝。此版本已做隔离 Bash 事务和命令适配器验证，并在 Ubuntu 24.04 上验证公网 SSH 登录及只读菜单；**尚未完成这些发行版上的防火墙/SSH实际变更、重启及SELinux内核验收**。不能据此承诺绝不掉线。实际使用前应准备云厂商救援控制台，并先在云安全组放行新端口；工具不能修改云安全组。
 
 ## 使用
 
@@ -28,6 +28,14 @@ sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh
 
 此入口不创建待确认事务，不卸载软件包。安装失败会清理临时服务屏蔽；启用或核对失败会尝试停用目标防火墙并报告。已添加的 SSH 放行保留，包管理器的安装结果也保留。成功后请新建 SSH 连接验证。可使用 `plan firewall-setup` 预览，或 `apply firewall-setup --apply` 执行。该行为遵循 [Ubuntu UFW 规则说明](https://ubuntu.com/server/docs/firewalls/) 和 [firewalld 离线配置手册](https://firewalld.org/documentation/man-pages/firewall-offline-cmd.html)。
 
+UFW 后端同时通过 systemd 和 `ufw status` 识别：即使 `ufw.service` 未显示 active，只要 UFW 报告 `Status: active`，仍按 UFW 管理规则，不要求安装 `iptables-persistent`。同时检测到其他活动防火墙管理器时仍会拒绝操作。菜单 2 列出 SSH 保护端口和本工具管理的端口；菜单 `16 查看完整规则` 显示实际防火墙规则，UFW 同时输出 `status numbered` 和 `show raw`，后者包含 before/after 链等完整运行规则。此查看功能不执行变更预检，也不要求安装 iptables 持久化组件或存在 SSH 会话；显式 `rules --backend ufw` 可查看已停用 UFW 的状态及当前内核规则。
+
+菜单 `17 配置防爆破` 可设置最大失败次数（1–100）、统计窗口（1–604800 秒）、封禁时长（1–31536000 秒），空输入采用 5 次、600 秒、3600 秒。预览后输入 Y/y 才执行；仍使用本工具 jail、当前管理来源豁免、新 SSH 会话确认和超时回退。菜单 7 保留快捷启用入口。未指定参数时保留本工具 jail 已有的对应值，首次启用则继承系统 Fail2ban 默认值；停用不会丢失已设置的三个参数。
+
+菜单 `18 查看备份` 或 `backups` 只读列出事务备份，显示编号、动作、后端、事务状态和完整性结果，不输出保存的 SSH 会话地址。编号前 14 位是 UTC 创建时间。`integrity=invalid` 表示备份损坏或不完整，不能用于恢复；此列表不自动选取或恢复最新备份。恢复仍需在菜单 13 指定编号；尚待确认的事务需通过菜单 14/15 处理。恢复使用所选事务变更前的快照，并非该次变更后的状态。
+
+菜单 2 和 `ports` 仅采集运行规则与 SSH 端口，不执行变更预检；已有 Fail2ban nft 表、停用 UFW 或缺少 iptables 持久化/restore 命令均不会单独阻止查看。UFW 会另行显示 `active/inactive`，菜单中显示“已启用/未启用”，以免把 `ufw.service` 的状态当成实际过滤状态。实际变更继续执行全部预检，仍会拒绝不支持的规则布局或停用态。UFW 的 `show raw` 底层查询在未初始化的系统上可能创建无链、无规则的空 ip/ip6 filter 表；这不会启用 UFW 或改变过滤策略。
+
 The no-argument entry point opens an interactive terminal menu in Chinese. Choose a numbered action, review its plan, then type `Y` or `y` to apply. The English menu is available with `menu --lang en`. Non-interactive automation should use the commands below.
 
 ### 自动化子命令
@@ -35,11 +43,15 @@ The no-argument entry point opens an interactive terminal menu in Chinese. Choos
 ```bash
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh status
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh ports
+sudo bash ./server-guard.sh rules
+sudo bash ./server-guard.sh backups
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh plan firewall-allow --port 8443
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-allow --port 8443 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-edit --port 8443 --to-port 8543 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-delete --port 8543 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply ssh-port --port 2299 --timeout 180 --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh plan fail2ban-enable --maxretry 5 --findtime 600 --bantime 3600
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply fail2ban-enable --maxretry 5 --findtime 600 --bantime 3600 --apply
 ```
 
 每次变更输出一个事务编号。在同一管理来源地址、同一服务器地址的**新 SSH 连接**中确认；SSH 端口变更必须经新端口建立连接。连接元组还须存在于 `ss` 的已建立连接列表中。旧连接不能确认。旧端口默认保留，工具不默认禁用密码或 root 登录。
@@ -59,6 +71,8 @@ sudo bash ./server-guard.sh rollback --id 20261030120000-0123456789abcdef --appl
 | --- | --- | --- |
 | `firewall-allow --port N` | 放行 TCP 端口；保留以前自有放行及现有无关规则 | 不用于此动作 |
 | `ports` | 只读列出受保护 SSH 端口及本工具放行的普通 TCP 端口 | 不适用 |
+| `rules` | 只读显示当前管理器实际规则；UFW 含编号与 raw 规则，iptables 双栈快照，nftables 运行规则，firewalld 全部运行/永久区域 | 不适用 |
+| `backups` | 校验并列出已有事务备份及状态，不需要 SSH 会话 | 不适用 |
 | `firewall-edit --port OLD --to-port NEW` | 将本工具自有普通端口改为新端口；原端口须完整存在于运行与持久规则 | 不用于此动作 |
 | `firewall-delete --port N` | 删除本工具自有普通端口；受保护 SSH 端口不可删除 | 不用于此动作 |
 | `firewall-clear` | 移除自有普通端口规则，重新保留全部受保护 SSH 端口和已有连接 | 清空所支持的整机过滤规则并改为放行；必须显式指定 |
@@ -135,10 +149,15 @@ bash ./fetch.sh --archive ./server-guard.tar.gz --sha256 '<64-hex-digest>' --out
 bash ./tests/guard_test.sh
 GUARD_TEST_FOCUS=selinux bash ./tests/guard_test.sh
 GUARD_TEST_FOCUS=ports bash ./tests/guard_test.sh
+GUARD_TEST_FOCUS=features bash ./tests/guard_test.sh
 bash -n ./server-guard.sh
 ```
 
 夹具需要 root 和预先准备的独立 `TMPDIR`，其 Unix 权限必须实际有效。测试根有专用 marker 且为 root 0700；先 realpath 再校验，`//`、`/./` 无法绕过生产路径限制。所有网络/服务命令经过严格适配器，未知命令直接失败。测试运行真实 Bash、文件备份、锁和状态机，并只读调用 systemd-analyze 校验生成 unit；没有调用宿主真实防火墙、SSH 或 systemd 写操作。暂未执行真实内核防火墙、真实重启或公网连接验收。
+
+## 外部功能参考
+
+参考 [avsba001/vps-secure 主入口](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/vps-secure.sh)、[Fail2ban 模块](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/fail2ban.sh)和[规则检查模块](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/ssh-whitelist-check.sh)的功能思路，独立实现可选封禁参数、备份列表与原生规则查看。UFW 完整规则展示依据 [Ubuntu UFW 手册](https://manpages.ubuntu.com/manpages/jammy/man8/ufw.8.html)。未引入上游脚本的远程自动执行、内核替换、CAKE、mangle MSS、地域/ASN 白名单或聚合网段封禁；这些功能需要单独定义兼容范围及回退方式。
 
 语义依据：[firewalld 运行与永久配置](https://firewalld.org/documentation/configuration/runtime-versus-permanent.html)、[firewall-cmd](https://firewalld.org/documentation/man-pages/firewall-cmd.html)、[firewall-offline-cmd](https://firewalld.org/documentation/man-pages/firewall-offline-cmd.html)、[UFW 加载顺序](https://sources.debian.org/src/ufw/0.36-1/src/ufw-init-functions/)、[nftables 链与 hook](https://wiki.netfilter.org/wiki-nftables/index.php/Configuring_chains)、[systemd.timer](https://www.freedesktop.org/software/systemd/man/247/systemd.timer.html)。
 

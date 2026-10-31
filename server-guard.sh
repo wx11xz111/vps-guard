@@ -5,6 +5,7 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C
 umask 077
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 LANGUAGE=zh ROOT='' ADAPTER='' MODE=${1:-menu} ACTION='' PORT='' TO_PORT='' ID='' SCOPE=owned APPLY=0 DRY=0 TIMEOUT=180 BACKEND_REQUEST='' MENU_EXTRA=0
+F2B_MAXRETRY='' F2B_FINDTIME='' F2B_BANTIME='' F2B_OPTIONS=0
 [[ $# == 0 ]] || shift
 die() { printf 'ERROR / 错误: %s\n' "$*" >&2; exit 1; }
 say() { if [[ $LANGUAGE == en ]]; then printf '%s\n' "$1"; else printf '%s\n' "$2"; fi; }
@@ -30,9 +31,14 @@ while (($#)); do
  case $1 in
   --apply) APPLY=1; MENU_EXTRA=1; shift;;
   --dry-run) DRY=1; MENU_EXTRA=1; shift;;
-  --lang|--port|--to-port|--id|--scope|--timeout|--backend)
+  --lang|--port|--to-port|--id|--scope|--timeout|--backend|--maxretry|--findtime|--bantime)
    (($# >= 2)) || die 'missing option value / 缺少参数值'
-   case $1 in --lang) LANGUAGE=$2;; --port) PORT=$2; MENU_EXTRA=1;; --to-port) TO_PORT=$2; MENU_EXTRA=1;; --id) ID=$2; MENU_EXTRA=1;; --scope) SCOPE=$2; MENU_EXTRA=1;; --timeout) TIMEOUT=$2; MENU_EXTRA=1;; --backend) BACKEND_REQUEST=$2; MENU_EXTRA=1;; esac; shift 2;;
+   case $1 in --maxretry|--findtime|--bantime) [[ -n $2 ]] || die 'missing Fail2ban option value / 缺少封禁参数值';; esac
+   case $1 in --lang) LANGUAGE=$2;; --port) PORT=$2; MENU_EXTRA=1;; --to-port) TO_PORT=$2; MENU_EXTRA=1;; --id) ID=$2; MENU_EXTRA=1;; --scope) SCOPE=$2; MENU_EXTRA=1;; --timeout) TIMEOUT=$2; MENU_EXTRA=1;; --backend) BACKEND_REQUEST=$2; MENU_EXTRA=1;;
+    --maxretry) F2B_MAXRETRY=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
+    --findtime) F2B_FINDTIME=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
+    --bantime) F2B_BANTIME=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
+   esac; shift 2;;
   firewall-setup|firewall-allow|firewall-edit|firewall-delete|firewall-disable|firewall-clear|firewall-restore|ssh-port|fail2ban-enable|fail2ban-disable)
    [[ -z $ACTION ]] || die 'only one action / 每次仅一个动作'; ACTION=$1; shift;;
   *) die 'unknown argument / 未知参数';;
@@ -46,7 +52,14 @@ done
 [[ -z $TO_PORT || $ACTION == firewall-edit ]] || die '--to-port is only for firewall-edit'
 [[ -z $ID ]] || id_valid "$ID" || die 'invalid transaction id / 事务编号无效'
 [[ -z $BACKEND_REQUEST || $BACKEND_REQUEST =~ ^(nftables|iptables|ufw|firewalld)$ ]] || die 'invalid backend'
-[[ $MODE =~ ^(menu|status|ports|plan|apply|confirm|rollback|recover)$ ]] || die 'use menu/status/ports/plan/apply/confirm/rollback'
+[[ $MODE =~ ^(menu|status|ports|rules|backups|plan|apply|confirm|rollback|recover)$ ]] || die 'use menu/status/ports/rules/backups/plan/apply/confirm/rollback'
+if ((F2B_OPTIONS)); then
+ [[ ($MODE == plan || $MODE == apply) && $ACTION == fail2ban-enable ]] || die 'Fail2ban options require plan/apply fail2ban-enable / 封禁参数仅用于启用Fail2ban'
+ for setting in "$F2B_MAXRETRY:100" "$F2B_FINDTIME:604800" "$F2B_BANTIME:31536000"; do
+  value=${setting%:*}; limit=${setting#*:}
+  [[ -z $value ]] || { [[ $value =~ ^[1-9][0-9]{0,7}$ ]] && ((10#$value <= limit)); } || die 'invalid Fail2ban setting: maxretry 1..100, findtime 1..604800 seconds, bantime 1..31536000 seconds / 封禁参数须为范围内的整数（时间单位为秒）'
+ done
+fi
 [[ $(id -u) == 0 ]] || die 'root required / 需要 root'
 if [[ -n ${GUARD_TEST_ROOT:-} || -n ${GUARD_TEST_ADAPTER:-} ]]; then
  [[ -n ${GUARD_TEST_ROOT:-} && -n ${GUARD_TEST_ADAPTER:-} ]] || die 'test root and adapter must be paired'
@@ -206,6 +219,31 @@ valid_transaction() {
  fi
  tar -tf "$saved/config.tar" >/dev/null || die 'invalid configuration backup'
 }
+list_backups() {
+ local saved transaction action backend status pending='' found=0
+ [[ ! -f $STATE/pending ]] || pending=$(cat "$STATE/pending")
+ say 'Backup IDs begin with their UTC creation time. Restore uses the state BEFORE that change.' '备份编号前14位为UTC创建时间；恢复使用该次变更前的状态。'
+ for saved in "$STATE"/transactions/*; do
+  [[ -d $saved ]] || continue
+  transaction=${saved##*/}; id_valid "$transaction" || continue
+  found=1
+  if ! (valid_transaction "$transaction") >/dev/null 2>&1; then
+   printf 'id=%s integrity=invalid\n' "$transaction"
+   continue
+  fi
+  action=$(sed -n '1p' "$saved/meta"); backend=$(sed -n '2p' "$saved/meta")
+  # Do not render arbitrary backup metadata as terminal text.
+  case $action in firewall-allow|firewall-edit|firewall-delete|firewall-clear|firewall-disable|firewall-restore|ssh-port|fail2ban-enable|fail2ban-disable) :;; *) action=unknown;; esac
+  case $backend in nftables|iptables|ufw|firewalld|none) :;; *) backend=unknown;; esac
+  status=saved
+  if [[ -f $STATE/audit.log ]]; then
+   status=$(awk -v id="$transaction" '$3==id && $2~/^(applied|confirmed|rolled-back|rollback-failed)$/ {s=$2} END {print (s=="" ? "saved" : s)}' "$STATE/audit.log")
+  fi
+  [[ $transaction != "$pending" ]] || status=pending
+  printf 'id=%s action=%s backend=%s status=%s integrity=ok\n' "$transaction" "$action" "$backend" "$status"
+ done
+ ((found)) || say 'No backups.' '暂无备份。'
+}
 save_services() {
  local s active enabled
  for s in nftables netfilter-persistent iptables ip6tables ufw firewalld fail2ban; do
@@ -357,10 +395,24 @@ mutate() {
    reload_ssh;;
   fail2ban-enable|fail2ban-disable)
    mkdir -p "$ROOT/etc/fail2ban/jail.d"
+   local policy=''
+   if [[ -f $ROOT/etc/fail2ban/jail.d/server-guard.local ]]; then
+    # Keep this jail's existing limits unless the caller explicitly replaces them.
+    policy=$(awk -v retries="$F2B_MAXRETRY" -v window="$F2B_FINDTIME" -v duration="$F2B_BANTIME" '
+     /^\[/ {own=($0=="[server-guard-sshd]")}
+     own && /^[[:space:]]*maxretry[[:space:]]*=/ && retries=="" {print}
+     own && /^[[:space:]]*findtime[[:space:]]*=/ && window=="" {print}
+     own && /^[[:space:]]*bantime[[:space:]]*=/ && duration=="" {print}
+    ' "$ROOT/etc/fail2ban/jail.d/server-guard.local")
+   fi
    { printf '[server-guard-sshd]\nfilter = sshd\nbackend = systemd\nenabled = %s\n' "$([[ $ACTION == fail2ban-enable ]] && echo true || echo false)"
      printf 'port = %s\n' "$(IFS=,; echo "${PORTS[*]}")"
      printf 'ignoreip = 127.0.0.1/8 ::1 %s\n' "$CLIENT"
    } > "$ROOT/etc/fail2ban/jail.d/server-guard.local"
+   [[ -z $policy ]] || printf '%s\n' "$policy" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
+   [[ -z $F2B_MAXRETRY ]] || printf 'maxretry = %s\n' "$F2B_MAXRETRY" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
+   [[ -z $F2B_FINDTIME ]] || printf 'findtime = %s\n' "$F2B_FINDTIME" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
+   [[ -z $F2B_BANTIME ]] || printf 'bantime = %s\n' "$F2B_BANTIME" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
    os fail2ban-client -t >/dev/null
    os systemctl reload-or-restart fail2ban;;
  esac
@@ -386,6 +438,12 @@ menu_ports() {
    if [[ $LANGUAGE == en ]]; then printf 'Firewall backend: %s\n' "${line#backend=}"; else printf '防火墙后端：%s\n' "${line#backend=}"; fi
    continue
   fi
+  if [[ $line == firewall-state=* ]]; then
+   if [[ $LANGUAGE == en ]]; then printf 'Firewall state: %s\n' "${line#firewall-state=}"
+   elif [[ ${line#firewall-state=} == active ]]; then printf '防火墙状态：已启用\n'
+   else printf '防火墙状态：未启用\n'; fi
+   continue
+  fi
   read -r kind protocol port <<< "$line"
   case $kind in
    protected-ssh) if [[ $LANGUAGE == en ]]; then printf 'Protected SSH port: %s/%s\n' "$port" "$protocol"; else printf 'SSH 保护端口：%s/%s\n' "$port" "$protocol"; fi;;
@@ -402,18 +460,30 @@ menu_change() {
  fi
  menu_invoke apply "${args[@]}" --apply
 }
+menu_fail2ban_policy() {
+ local retries window duration
+ say 'Configure the tool SSH jail. Blank uses 5 retries / 600s window / 3600s ban.' '配置本工具SSH防爆破：回车采用5次重试、600秒统计窗口、3600秒封禁。'
+ say 'Maximum retries (1..100):' '最大失败次数（1..100）：'
+ menu_read || return 0; retries=${REPLY:-5}
+ say 'Failure window in seconds (1..604800):' '统计窗口秒数（1..604800）：'
+ menu_read || return 0; window=${REPLY:-600}
+ say 'Ban duration in seconds (1..31536000):' '封禁秒数（1..31536000）：'
+ menu_read || return 0; duration=${REPLY:-3600}
+ menu_change fail2ban-enable --maxretry "$retries" --findtime "$window" --bantime "$duration"
+}
 menu() {
  local choice first second transaction
  if [[ ! -t 0 && -z $ADAPTER ]]; then die 'menu requires an interactive terminal / 菜单需要交互终端'; fi
  while :; do
   if [[ $LANGUAGE == en ]]; then
-   printf '\n=== Server Guard ===\n1 Install and enable firewall\n2 Ports  3 Add port  4 Edit port  5 Delete port\n6 SSH port  7 Enable Fail2ban  8 Disable Fail2ban\n9 Status\n10 Disable firewall  11 Clear owned ports  12 Clear all rules\n13 Restore firewall  14 Confirm transaction  15 Roll back transaction\n0 Exit\nChoose: '
+   printf '\n=== Server Guard ===\n1 Install and enable firewall\n2 Ports  3 Add port  4 Edit port  5 Delete port\n6 SSH port  7 Enable Fail2ban  8 Disable Fail2ban\n9 Status\n10 Disable firewall  11 Clear owned ports  12 Clear all rules\n13 Restore firewall  14 Confirm transaction  15 Roll back transaction\n16 Firewall rules  17 Configure Fail2ban  18 List backups\n0 Exit\nChoose: '
   else
    printf '\n╔══════════ 服务器保护菜单 ══════════╗\n'
    printf '\n【防火墙与端口】\n 1 安装并启用防火墙\n 2 查看端口       3 添加端口       4 修改端口\n 5 删除端口\n'
    printf '\n【SSH 与防爆破】\n 6 切换 SSH 端口  7 启用 Fail2ban  8 停用 Fail2ban\n'
    printf '\n【状态与维护】\n 9 查看状态\n10 关闭防火墙    11 清空自有端口  12 清空全部规则\n'
-   printf '13 恢复防火墙    14 确认变更      15 手工回退\n 0 退出\n请选择：'
+   printf '13 恢复防火墙    14 确认变更      15 手工回退\n'
+   printf '16 查看完整规则  17 配置防爆破    18 查看备份\n 0 退出\n请选择：'
   fi
   menu_read || return 0
   choice=$REPLY
@@ -448,6 +518,9 @@ menu() {
    1) menu_change firewall-setup || say 'Action failed.' '操作失败。';;
    7) menu_change fail2ban-enable || say 'Action failed.' '操作失败。';;
    8) menu_change fail2ban-disable || say 'Action failed.' '操作失败。';;
+   16) menu_invoke rules || say 'Rule lookup failed.' '规则查询失败。';;
+   17) menu_fail2ban_policy || say 'Action failed.' '操作失败。';;
+   18) menu_invoke backups || say 'Backup lookup failed.' '备份查询失败。';;
    10) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。';;
    11) menu_change firewall-clear || say 'Action failed.' '操作失败。';;
    12) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。';;
@@ -484,10 +557,19 @@ if [[ $MODE == status ]]; then
  if [[ -f $STATE/pending ]]; then printf 'pending / 待确认: %s\n' "$(cat "$STATE/pending")"; else say 'No pending transaction.' '没有待确认事务。'; fi
  exit
 fi
+if [[ $MODE == rules || $MODE == backups ]]; then
+ [[ -z $ACTION$PORT$TO_PORT$ID && $APPLY == 0 && $DRY == 0 && $SCOPE == owned ]] || die 'rules/backups are read-only / 规则和备份查询只接受只读参数'
+ [[ $MODE != backups || -z $BACKEND_REQUEST ]] || die 'backups takes no backend / 备份查询无需后端'
+ secure_paths
+ if [[ $MODE == backups ]]; then list_backups
+ else detect_backend; backend_show_rules || die 'cannot read firewall rules / 无法读取防火墙规则'; fi
+ exit
+fi
 if [[ $MODE == ports ]]; then
  [[ -z $ACTION && -z $PORT && -z $TO_PORT && $APPLY == 0 ]] || die 'ports is read-only and takes no action/port / ports仅用于只读查看'
- platform; secure_paths; discover; detect_backend; backend_preflight
+ platform; secure_paths; discover; detect_backend; backend_read_ports
  printf 'backend=%s\n' "$BACKEND"
+ [[ $BACKEND != ufw ]] || printf 'firewall-state=%s\n' "$UFW_STATE"
  for p in "${PROTECTED_PORTS[@]}"; do printf 'protected-ssh tcp %s\n' "$p"; done
  owned=$(backend_owned_ports) || die 'invalid owned firewall registry / 自有规则记录无效'
  while read -r p; do [[ -z $p ]] || protected_port "$p" || printf 'owned tcp %s\n' "$p"; done <<< "$owned"
@@ -515,6 +597,10 @@ fi
 preflight
 if [[ $MODE == plan || $DRY == 1 ]]; then
  printf 'backend=%s action=%s port=%s to_port=%s scope=%s protected_ports=%s timeout=%ss\n' "$BACKEND" "$ACTION" "$PORT" "$TO_PORT" "$SCOPE" "${PROTECTED_PORTS[*]}" "$TIMEOUT"
+ if [[ $ACTION == fail2ban-enable ]]; then
+  printf 'fail2ban maxretry=%s findtime=%s bantime=%s\n' "${F2B_MAXRETRY:-inherit}" "${F2B_FINDTIME:-inherit}" "${F2B_BANTIME:-inherit}"
+  say 'findtime/bantime are seconds. Unspecified limits keep this jail values or system defaults.' 'findtime/bantime单位为秒；inherit沿用本工具已有值或系统默认值。'
+ fi
  say 'Plan only; no files, services or firewall rules changed.' '仅预览；未修改文件、服务或防火墙规则。'; exit
 fi
 [[ $APPLY == 1 ]] || die 'mutation requires explicit --apply / 实际变更需显式--apply'

@@ -3,9 +3,26 @@
 .env.*
 !.env.example
 !.env.*.example
+# Machine-specific configuration and secrets (keep shareable examples)
+/config/
+/configs/
+/config.*
+!/config.example.*
+!/config.sample.*
+*.local
+*.local.*
+/secrets/
+/secrets.*
+/credentials/
+/credentials.*
+/.codex/
 .ssh/
 id_rsa
 id_ed25519
+id_ecdsa
+id_dsa
+*.pem
+*.ppk
 *.key
 *.key.pem
 privkey*.pem

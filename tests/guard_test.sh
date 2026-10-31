@@ -58,6 +58,7 @@ if [[ ${GUARD_TEST_FOCUS:-} == setup ]]; then source "$HERE/setup_test.sh"; exit
 if [[ ${GUARD_TEST_FOCUS:-} == ports ]]; then source "$HERE/ports_test.sh"; exit; fi
 if [[ ${GUARD_TEST_FOCUS:-} == menu ]]; then source "$HERE/menu_test.sh"; exit; fi
 if [[ ${GUARD_TEST_FOCUS:-} == fail2ban ]]; then source "$HERE/fail2ban_test.sh"; exit; fi
+if [[ ${GUARD_TEST_FOCUS:-} == features ]]; then source "$HERE/features_test.sh"; exit; fi
 if [[ ${GUARD_TEST_FOCUS:-} == selinux* ]]; then source "$HERE/selinux_test.sh"; exit; fi
 if [[ -n ${GUARD_TEST_FOCUS:-} ]]; then run_review_regressions "$GUARD_TEST_FOCUS"; exit; fi
 reset_fixture
@@ -230,5 +231,6 @@ rollback
 run apply fail2ban-disable --apply >/dev/null; rollback
 ok 'Fail2ban owns only its jail, covers all ports and ignores management source; CentOS7 rejected'
 bash "$HERE/fetch_test.sh"
+source "$HERE/features_test.sh"
 run_review_regressions all
 printf 'PASS: server-guard suite complete\n'

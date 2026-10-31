@@ -78,7 +78,8 @@ case $cmd in
    'daemon-reload') :;;
    'enable server-guard-boot.service'|'disable server-guard-boot.service') service_link "$1" "$2";;
    'enable --now server-guard-rollback.timer'|'disable --now server-guard-rollback.timer') service_link "$1" "$3"; if [[ $1 == disable ]]; then rm -f "$F/timer-ready"; fi;;
-   'cat nftables'|'cat netfilter-persistent'|'cat iptables ip6tables') echo '[Service]';;
+   'cat netfilter-persistent') [[ ! -f $F/missing-netfilter-persistent ]] || exit 1; echo '[Service]';;
+   'cat nftables'|'cat iptables ip6tables') echo '[Service]';;
    'reload ssh'|'reload sshd'|'reload-or-restart fail2ban')
     mutation "$@"
     if [[ -f $F/ssh-reload-fail && ${GUARD_RECOVERING:-} != 1 ]]; then exit 1; fi
@@ -141,7 +142,7 @@ case $cmd in
   if [[ $cmd == ip6tables-restore && -f $F/mutate-fail ]]; then rm "$F/mutate-fail"; exit 1; fi;;
  nft)
   case "$*" in
-   'list tables') if [[ $backend == nftables ]]; then echo 'table inet filter'; elif [[ $backend == firewalld && $(cat "$F/services/firewalld.active") == 1 ]]; then echo 'table inet firewalld'; fi;;
+   'list tables') if [[ $backend == nftables ]]; then echo 'table inet filter'; elif [[ $backend == firewalld && $(cat "$F/services/firewalld.active") == 1 ]]; then echo 'table inet firewalld'; fi; [[ ! -f $F/foreign-nft ]] || echo 'table inet f2b-table';;
    'list ruleset') cat "$F/nft";;
    '-f '*) [[ $# == 2 ]] || bad "$@"; mutation "$@"; [[ ! -f $F/restore-fail ]] || exit 1; sed '/^flush ruleset$/d' "$2" > "$F/nft";;
    *) bad "$@";;
@@ -149,6 +150,12 @@ case $cmd in
  ufw)
   case "$*" in
    'status') [[ $backend == ufw && $(cat "$F/ufw-active") == 1 ]] && echo 'Status: active' || echo 'Status: inactive';;
+   'status numbered')
+    [[ ! -f $F/ufw-status-fail ]] || exit 1
+    if [[ $backend == ufw && $(cat "$F/ufw-active") == 1 ]]; then
+     printf 'Status: active\n\n     To                         Action      From\n[ 1] 8080/tcp                   ALLOW IN    Anywhere\n[ 2] 5353/udp (v6)              ALLOW IN    Anywhere (v6)\n'
+    else echo 'Status: inactive'; fi;;
+   'show raw') printf 'IPv4 runtime\n'; cat "$F/v4"; printf 'IPv6 runtime\n'; cat "$F/v6";;
    '--force disable') mutation "$@"; echo 0 > "$F/ufw-active"; echo ENABLED=no > "$R/etc/ufw/ufw.conf";;
    '--force enable'|'reload') mutation "$@"; echo 1 > "$F/ufw-active"; echo ENABLED=yes > "$R/etc/ufw/ufw.conf"; for family in v4 v6; do bash "$(dirname "$0")/ufw_model.sh" load "$R" "$family"; done;;
    'default allow incoming'|'default allow outgoing'|'default allow routed') mutation "$@";;
@@ -161,6 +168,9 @@ case $cmd in
    '--state') [[ $backend == firewalld ]] || exit 1; echo running;;
    '--get-zones') echo public;;
    '--get-active-zones') printf 'public\n  interfaces: eth0\n';;
+   '--list-all-zones'|'--permanent --list-all-zones')
+    ports=$F/fw-ports; [[ $1 != --permanent ]] || ports=$R/etc/firewalld/fixture-ports
+    printf 'public\n  services: %s\n  ports: %s\n' "$(cat "$F/fw-services")" "$(cat "$ports")";;
    '--get-active-policies'|'--get-policies'|'--permanent --get-policies'|'--direct --get-all-rules'|'--permanent --direct --get-all-rules'|'--direct --get-all-passthroughs'|'--permanent --direct --get-all-passthroughs') :;;
    '--reload') mutation "$@"; cp "$R/etc/firewalld/fixture-ports" "$F/fw-ports"; cp "$R/etc/firewalld/fixture-target" "$F/fw-target";;
    *)

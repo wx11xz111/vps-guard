@@ -125,8 +125,15 @@ setup_firewall() (
  say "Firewall enabled: $service. Open a new SSH connection to verify access." "防火墙已启用：$service。请新建 SSH 连接验证访问。"
 )
 detect_backend() {
+ local SESSION_PORT=${SESSION_PORT:-unknown}
  local s; local -a active=()
- for s in firewalld ufw nftables; do os systemctl is-active --quiet "$s" && active+=("$s"); done
+ for s in firewalld ufw nftables; do
+  # UFW rules can remain active even when its oneshot unit is inactive.
+  # Identify the manager before falling back to its underlying iptables rules.
+  if os systemctl is-active --quiet "$s" || { [[ $s == ufw ]] && has ufw && [[ $(os ufw status) == 'Status: active'* ]]; }; then
+   active+=("$s")
+  fi
+ done
  if os systemctl is-active --quiet netfilter-persistent || os systemctl is-active --quiet iptables || os systemctl is-active --quiet ip6tables; then active+=(iptables); fi
  ((${#active[@]} <= 1)) || die 'conflicting firewall managers / 多个防火墙管理器冲突'
  BACKEND=${BACKEND_REQUEST:-${active[0]:-}}
@@ -138,6 +145,46 @@ detect_backend() {
   [[ -z $nt || -z $ip ]] || die 'ambiguous unmanaged nft/iptables; choose a single manager first'
   if [[ -n $nt ]]; then BACKEND=nftables; elif [[ -n $ip ]]; then BACKEND=iptables; else die "no supported firewall manager. Menu 7/8 need no firewall. For port/SSH changes, allow current SSH port $SESSION_PORT/tcp in the cloud security group and UFW (Debian/Ubuntu) or firewalld (RHEL/Rocky/Alma) before enabling the manager; keep this SSH session and rescue-console access, then retry. / 未检测到受支持防火墙。菜单7/8无需防火墙；可用菜单1安装并启用防火墙。端口或SSH操作请先在云安全组和拟启用的UFW或firewalld中放行当前SSH端口 $SESSION_PORT/tcp，保留当前连接及救援控制台，再启用防火墙并重试"; fi
  fi
+}
+backend_show_rules() {
+ # Read native rules without mutation preflight or persistence dependencies.
+ printf 'backend=%s\n' "$BACKEND"
+ case $BACKEND in
+  ufw)
+   need ufw ufw ufw
+   os ufw status numbered || return
+   say 'Complete runtime rules (including before/after chains):' '完整运行规则（含before/after链）：'
+   os ufw show raw || return;;
+  nftables) need nft nftables nftables; os nft list ruleset || return;;
+  iptables)
+   need iptables-save iptables iptables; need ip6tables-save iptables iptables
+   say 'IPv4 runtime rules:' 'IPv4运行规则：'; os iptables-save || return
+   say 'IPv6 runtime rules:' 'IPv6运行规则：'; os ip6tables-save || return;;
+  firewalld)
+   need firewall-cmd firewalld firewalld
+   say 'Runtime zones:' '运行区域规则：'; os firewall-cmd --list-all-zones || return
+   say 'Permanent zones:' '永久区域规则：'; os firewall-cmd --permanent --list-all-zones || return;;
+ esac
+}
+backend_read_ports() {
+ # Inspection must work even when the configuration is unsafe to modify.
+ case $BACKEND in
+  nftables)
+   need nft nftables nftables
+   NFT_TEXT=$(os nft list ruleset) || die 'cannot read nftables rules';;
+  iptables|ufw)
+   need iptables-save iptables iptables; need ip6tables-save iptables iptables
+   IPT4=$(os iptables-save) || die 'cannot read IPv4 rules'
+   IPT6=$(os ip6tables-save) || die 'cannot read IPv6 rules'
+   if [[ $BACKEND == ufw ]]; then
+    need ufw ufw ufw
+    local status; status=$(os ufw status) || die 'cannot query UFW status'
+    case $status in 'Status: active'*) UFW_STATE=active;; 'Status: inactive') UFW_STATE=inactive;; *) die 'unknown UFW status';; esac
+   fi;;
+  firewalld)
+   need firewall-cmd firewalld firewalld
+   fw_query --state >/dev/null || die 'cannot query firewalld state';;
+ esac
 }
 iptables_shape() {
  # INPUT is protected ahead of all existing rules. Early raw/mangle/security
