@@ -367,6 +367,17 @@ mutate() {
 }
 menu_invoke() { bash "$HERE/server-guard.sh" "$@" --lang "$LANGUAGE"; }
 menu_read() { IFS= read -r REPLY; }
+menu_confirm() {
+ while :; do
+  if [[ $LANGUAGE == en ]]; then printf '%s [y/N] (default: No): ' "$1"; else printf '%s [y/N]（默认否）：' "$2"; fi
+  menu_read || return 1
+  case ${REPLY,,} in
+   y) return 0;;
+   n|'') return 1;;
+   *) say 'Please enter Y or N.' '请输入 Y 或 N。';;
+  esac
+ done
+}
 menu_ports() {
  local output kind protocol port line
  output=$(menu_invoke ports) || return 1
@@ -384,12 +395,8 @@ menu_ports() {
 }
 menu_change() {
  local -a args=("$@")
- local answer
  menu_invoke plan "${args[@]}" || return 1
- if [[ $LANGUAGE == en ]]; then printf 'Type YES to apply (anything else cancels): '; else printf '输入“确认”执行，其他内容取消：'; fi
- menu_read || return 0
- answer=$REPLY
- if [[ ($LANGUAGE == zh && $answer != 确认) || ($LANGUAGE == en && $answer != YES) ]]; then
+ if ! menu_confirm 'Apply these changes?' '是否执行以上变更？'; then
   say 'Cancelled.' '已取消。'
   return 0
  fi
@@ -449,12 +456,13 @@ menu() {
     menu_read || return 0; transaction=$REPLY
     case $choice in
      13) menu_change firewall-restore --id "$transaction" || say 'Action failed.' '操作失败。';;
-     14) menu_invoke confirm --id "$transaction" --apply || say 'Confirmation failed.' '确认失败。';;
+     14)
+      if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。'; continue; fi
+      if ! menu_confirm "Keep changes for $transaction?" "是否确认保留事务 $transaction 的变更？"; then say 'Cancelled.' '已取消。'; continue; fi
+      menu_invoke confirm --id "$transaction" --apply || say 'Confirmation failed.' '确认失败。';;
      15)
       if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。'; continue; fi
-      if [[ $LANGUAGE == en ]]; then printf 'Roll back transaction %s? Type YES: ' "$transaction"; else printf '回退事务 %s？输入“确认”执行：' "$transaction"; fi
-      menu_read || return 0
-      if [[ ($LANGUAGE == zh && $REPLY != 确认) || ($LANGUAGE == en && $REPLY != YES) ]]; then say 'Cancelled.' '已取消。'; continue; fi
+      if ! menu_confirm "Roll back transaction $transaction?" "是否回退事务 $transaction？"; then say 'Cancelled.' '已取消。'; continue; fi
       menu_invoke rollback --id "$transaction" --apply || say 'Rollback failed.' '回退失败。';;
     esac;;
    *) say 'Unknown choice.' '选项无效。';;

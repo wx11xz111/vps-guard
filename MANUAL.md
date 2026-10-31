@@ -10,6 +10,8 @@
 
 ### 中文终端菜单
 
+中英文菜单的所有是否确认使用 `[y/N]`，默认否：`Y/y` 执行，`N/n` 或空输入取消；其他输入重新询问，输入结束也按取消处理。安装启用、防火墙/SSH 变更、清空、确认保留事务及回退均需明确选择 Y/y。
+
 通过一键安装器安装后，直接执行 `vps-guard` 即可在任意目录打开菜单；普通用户通过 sudo 提权时会保留 SSH 会话信息。菜单顺序为：1 安装并启用防火墙；2 查看端口；3 添加；4 修改；5 删除；6 切换 SSH 端口；7/8 启停 Fail2ban；9 查看状态；10 关闭防火墙；11 清空自有端口；12 清空全部规则；13 恢复防火墙；14 确认变更；15 手工回退；0 退出。
 
 进入已校验、解压的 `server-guard` 目录，在 SSH 交互终端运行一条命令即可打开中文菜单：
@@ -18,15 +20,15 @@
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh
 ```
 
-菜单提供端口查看/添加/修改/删除、SSH 端口切换、状态及 Fail2ban 查看/启停、防火墙关闭/清空/还原、事务确认与回退。状态同时区分 Fail2ban 服务与本工具的 SSH jail。输入编号选择功能；普通变更前会显示只读预览，输入“确认”才执行；手工回退须输入有效事务编号并再次确认。执行后若出现待确认事务，须从同一管理来源新建 SSH 连接，再在菜单选择“确认变更”并输入事务编号；切换 SSH 端口时必须通过新端口连接。超时仍由现有独立任务回退。退出菜单输入 `0`。菜单只接受 `--lang zh/en`，不接受 `--dry-run` 等其它选项；非交互环境请继续使用下列明确的子命令。英文菜单可用 `bash ./server-guard.sh menu --lang en`。
+菜单提供端口查看/添加/修改/删除、SSH 端口切换、状态及 Fail2ban 查看/启停、防火墙关闭/清空/还原、事务确认与回退。状态同时区分 Fail2ban 服务与本工具的 SSH jail。输入编号选择功能；普通变更前会显示只读预览，输入 Y/y 才执行；手工回退须输入有效事务编号并再次确认。执行后若出现待确认事务，须从同一管理来源新建 SSH 连接，再在菜单选择“确认变更”并输入事务编号；切换 SSH 端口时必须通过新端口连接。超时仍由现有独立任务回退。退出菜单输入 `0`。菜单只接受 `--lang zh/en`，不接受 `--dry-run` 等其它选项；非交互环境请继续使用下列明确的子命令。英文菜单可用 `bash ./server-guard.sh menu --lang en`。
 
-菜单 `7 启用 Fail2ban` 和 `8 停用 Fail2ban` 不要求先启用 UFW/firewalld。缺少防火墙时，选择 `1 安装并启用防火墙`，先检查预览中列出的 SSH 端口已在云安全组放行，再输入“确认”。Debian/Ubuntu 通过 apt 安装 UFW；RHEL/Rocky/Alma 通过 dnf 安装 firewalld。已经安装但停用的受支持管理器也可通过此入口启用。已有管理器正在运行时会提示使用端口管理，不重复安装。
+菜单 `7 启用 Fail2ban` 和 `8 停用 Fail2ban` 不要求先启用 UFW/firewalld。缺少防火墙时，选择 `1 安装并启用防火墙`，先检查预览中列出的 SSH 端口已在云安全组放行，再输入 Y/y。Debian/Ubuntu 通过 apt 安装 UFW；RHEL/Rocky/Alma 通过 dnf 安装 firewalld。已经安装但停用的受支持管理器也可通过此入口启用。已有管理器正在运行时会提示使用端口管理，不重复安装。
 
 安装期间临时屏蔽目标 systemd 服务以防包安装提前启动。UFW 先校验并在 IPv4/IPv6 before 规则中保护全部已识别 SSH 端口；firewalld 通过离线命令向每个区域写入 SSH 放行，再启动并查询运行状态。启用后设为开机启动。存在其他管理器、已有非平凡内核规则、自定义 firewalld direct/policy/rich/转发配置时会提前拒绝。其他业务端口不会自动发现或放行，应按需配置；云安全组由管理员维护。
 
 此入口不创建待确认事务，不卸载软件包。安装失败会清理临时服务屏蔽；启用或核对失败会尝试停用目标防火墙并报告。已添加的 SSH 放行保留，包管理器的安装结果也保留。成功后请新建 SSH 连接验证。可使用 `plan firewall-setup` 预览，或 `apply firewall-setup --apply` 执行。该行为遵循 [Ubuntu UFW 规则说明](https://ubuntu.com/server/docs/firewalls/) 和 [firewalld 离线配置手册](https://firewalld.org/documentation/man-pages/firewall-offline-cmd.html)。
 
-The no-argument entry point opens an interactive terminal menu in Chinese. Choose a numbered action, review its plan, then type `确认` to apply. The English menu is available with `menu --lang en`. Non-interactive automation should use the commands below.
+The no-argument entry point opens an interactive terminal menu in Chinese. Choose a numbered action, review its plan, then type `Y` or `y` to apply. The English menu is available with `menu --lang en`. Non-interactive automation should use the commands below.
 
 ### 自动化子命令
 

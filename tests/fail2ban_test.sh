@@ -49,7 +49,7 @@ ok 'Detached recovery restores Fail2ban without a firewall manager or SSH sessio
 
 reset_fixture
 without_firewall
-printf '7\n确认\n0\n' | run menu > "$work/fail2ban-menu"
+printf '7\ny\n0\n' | run menu > "$work/fail2ban-menu"
 grep -q 'pending / 待确认' "$work/fail2ban-menu"
 rollback
 ok 'Chinese menu enables Fail2ban without a firewall manager'

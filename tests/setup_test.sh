@@ -23,7 +23,7 @@ for distro in ubuntu rocky; do
  ok "$distro installs and protects all SSH ports before enabling"
 done
 setup_fixture
-printf '1\n确认\n0\n' | run menu > "$work/setup-menu"
+printf '1\ny\n0\n' | run menu > "$work/setup-menu"
 grep -q '安装并启用防火墙' "$work/setup-menu"
 ok 'Menu 1 installs and enables the firewall'
 setup_fixture
