@@ -7,8 +7,28 @@ HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 LANGUAGE=zh ROOT='' ADAPTER='' MODE=${1:-menu} ACTION='' PORT='' TO_PORT='' ID='' SCOPE=owned APPLY=0 DRY=0 TIMEOUT=180 BACKEND_REQUEST='' MENU_EXTRA=0
 F2B_MAXRETRY='' F2B_FINDTIME='' F2B_BANTIME='' F2B_OPTIONS=0
 [[ $# == 0 ]] || shift
-die() { printf 'ERROR / 错误: %s\n' "$*" >&2; exit 1; }
-say() { if [[ $LANGUAGE == en ]]; then printf '%s\n' "$1"; else printf '%s\n' "$2"; fi; }
+ui_printf() {
+ local tone=$1 color='' reset=''
+ shift
+ # Decide for the actual output stream, including stderr redirects.
+ if [[ -t 1 && ${TERM:-dumb} != dumb && -z ${NO_COLOR:-} ]]; then
+  case $tone in
+   title|info) color=$'\033[1;36m';;
+   section) color=$'\033[1;34m';;
+   success) color=$'\033[1;32m';;
+   warning) color=$'\033[1;33m';;
+   error) color=$'\033[1;31m';;
+   prompt) color=$'\033[1;35m';;
+   muted) color=$'\033[90m';;
+  esac
+  [[ -z $color ]] || reset=$'\033[0m'
+ fi
+ printf '%s' "$color"
+ printf "$@"
+ printf '%s' "$reset"
+}
+die() { ui_printf error 'ERROR / 错误: %s\n' "$*" >&2; exit 1; }
+say() { if [[ $LANGUAGE == en ]]; then ui_printf "${3:-info}" '%s\n' "$1"; else ui_printf "${3:-info}" '%s\n' "$2"; fi; }
 port_valid() { [[ $1 =~ ^[1-9][0-9]{0,4}$ ]] && ((10#$1 <= 65535)); }
 id_valid() { [[ $1 =~ ^[0-9]{14}-[a-f0-9]{16}$ ]]; }
 address_valid() {
@@ -228,7 +248,7 @@ list_backups() {
   transaction=${saved##*/}; id_valid "$transaction" || continue
   found=1
   if ! (valid_transaction "$transaction") >/dev/null 2>&1; then
-   printf 'id=%s integrity=invalid\n' "$transaction"
+   ui_printf error 'id=%s integrity=invalid\n' "$transaction"
    continue
   fi
   action=$(sed -n '1p' "$saved/meta"); backend=$(sed -n '2p' "$saved/meta")
@@ -240,7 +260,9 @@ list_backups() {
    status=$(awk -v id="$transaction" '$3==id && $2~/^(applied|confirmed|rolled-back|rollback-failed)$/ {s=$2} END {print (s=="" ? "saved" : s)}' "$STATE/audit.log")
   fi
   [[ $transaction != "$pending" ]] || status=pending
-  printf 'id=%s action=%s backend=%s status=%s integrity=ok\n' "$transaction" "$action" "$backend" "$status"
+  local tone=info
+  case $status in pending) tone=warning;; confirmed) tone=success;; rollback-failed) tone=error;; esac
+  ui_printf "$tone" 'id=%s action=%s backend=%s status=%s integrity=ok\n' "$transaction" "$action" "$backend" "$status"
  done
  ((found)) || say 'No backups.' '暂无备份。'
 }
@@ -373,7 +395,7 @@ recover_locked() {
  if restore_transaction; then
   printf '%s rolled-back %s\n' "$(date -u +%FT%TZ)" "$pending" >> "$STATE/audit.log"
   rm -- "$STATE/pending"; disarm
-  say "Rolled back: $pending" "已回退：$pending"
+  say "Rolled back: $pending" "已回退：$pending" success
  else
   printf '%s rollback-failed %s\n' "$(date -u +%FT%TZ)" "$pending" >> "$STATE/audit.log"
   say 'Recovery failed; pending state and timer retained for retry.' '回退失败；保留待确认状态和独立回退任务以便重试。' >&2
@@ -421,12 +443,12 @@ menu_invoke() { bash "$HERE/server-guard.sh" "$@" --lang "$LANGUAGE"; }
 menu_read() { IFS= read -r REPLY; }
 menu_confirm() {
  while :; do
-  if [[ $LANGUAGE == en ]]; then printf '%s [y/N] (default: No): ' "$1"; else printf '%s [y/N]（默认否）：' "$2"; fi
+  if [[ $LANGUAGE == en ]]; then ui_printf warning '%s [y/N] (default: No): ' "$1"; else ui_printf warning '%s [y/N]（默认否）：' "$2"; fi
   menu_read || return 1
   case ${REPLY,,} in
    y) return 0;;
    n|'') return 1;;
-   *) say 'Please enter Y or N.' '请输入 Y 或 N。';;
+   *) say 'Please enter Y or N.' '请输入 Y 或 N。' warning;;
   esac
  done
 }
@@ -435,19 +457,20 @@ menu_ports() {
  output=$(menu_invoke ports) || return 1
  while IFS= read -r line; do
   if [[ $line == backend=* ]]; then
-   if [[ $LANGUAGE == en ]]; then printf 'Firewall backend: %s\n' "${line#backend=}"; else printf '防火墙后端：%s\n' "${line#backend=}"; fi
+   if [[ $LANGUAGE == en ]]; then ui_printf info 'Firewall backend: %s\n' "${line#backend=}"; else ui_printf info '防火墙后端：%s\n' "${line#backend=}"; fi
    continue
   fi
   if [[ $line == firewall-state=* ]]; then
-   if [[ $LANGUAGE == en ]]; then printf 'Firewall state: %s\n' "${line#firewall-state=}"
-   elif [[ ${line#firewall-state=} == active ]]; then printf '防火墙状态：已启用\n'
-   else printf '防火墙状态：未启用\n'; fi
+   local tone=warning; [[ ${line#firewall-state=} != active ]] || tone=success
+   if [[ $LANGUAGE == en ]]; then ui_printf "$tone" 'Firewall state: %s\n' "${line#firewall-state=}"
+   elif [[ ${line#firewall-state=} == active ]]; then ui_printf "$tone" '防火墙状态：已启用\n'
+   else ui_printf "$tone" '防火墙状态：未启用\n'; fi
    continue
   fi
   read -r kind protocol port <<< "$line"
   case $kind in
-   protected-ssh) if [[ $LANGUAGE == en ]]; then printf 'Protected SSH port: %s/%s\n' "$port" "$protocol"; else printf 'SSH 保护端口：%s/%s\n' "$port" "$protocol"; fi;;
-   owned) if [[ $LANGUAGE == en ]]; then printf 'Managed port: %s/%s\n' "$port" "$protocol"; else printf '本工具管理端口：%s/%s\n' "$port" "$protocol"; fi;;
+   protected-ssh) if [[ $LANGUAGE == en ]]; then ui_printf info 'Protected SSH port: %s/%s\n' "$port" "$protocol"; else ui_printf info 'SSH 保护端口：%s/%s\n' "$port" "$protocol"; fi;;
+   owned) if [[ $LANGUAGE == en ]]; then ui_printf success 'Managed port: %s/%s\n' "$port" "$protocol"; else ui_printf success '本工具管理端口：%s/%s\n' "$port" "$protocol"; fi;;
   esac
  done <<< "$output"
 }
@@ -455,7 +478,7 @@ menu_change() {
  local -a args=("$@")
  menu_invoke plan "${args[@]}" || return 1
  if ! menu_confirm 'Apply these changes?' '是否执行以上变更？'; then
-  say 'Cancelled.' '已取消。'
+  say 'Cancelled.' '已取消。' muted
   return 0
  fi
  menu_invoke apply "${args[@]}" --apply
@@ -463,11 +486,11 @@ menu_change() {
 menu_fail2ban_policy() {
  local retries window duration
  say 'Configure the tool SSH jail. Blank uses 5 retries / 600s window / 3600s ban.' '配置本工具SSH防爆破：回车采用5次重试、600秒统计窗口、3600秒封禁。'
- say 'Maximum retries (1..100):' '最大失败次数（1..100）：'
+ say 'Maximum retries (1..100):' '最大失败次数（1..100）：' prompt
  menu_read || return 0; retries=${REPLY:-5}
- say 'Failure window in seconds (1..604800):' '统计窗口秒数（1..604800）：'
+ say 'Failure window in seconds (1..604800):' '统计窗口秒数（1..604800）：' prompt
  menu_read || return 0; window=${REPLY:-600}
- say 'Ban duration in seconds (1..31536000):' '封禁秒数（1..31536000）：'
+ say 'Ban duration in seconds (1..31536000):' '封禁秒数（1..31536000）：' prompt
  menu_read || return 0; duration=${REPLY:-3600}
  menu_change fail2ban-enable --maxretry "$retries" --findtime "$window" --bantime "$duration"
 }
@@ -476,69 +499,83 @@ menu() {
  if [[ ! -t 0 && -z $ADAPTER ]]; then die 'menu requires an interactive terminal / 菜单需要交互终端'; fi
  while :; do
   if [[ $LANGUAGE == en ]]; then
-   printf '\n=== Server Guard ===\n1 Install and enable firewall\n2 Ports  3 Add port  4 Edit port  5 Delete port\n6 SSH port  7 Enable Fail2ban  8 Disable Fail2ban\n9 Status\n10 Disable firewall  11 Clear owned ports  12 Clear all rules\n13 Restore firewall  14 Confirm transaction  15 Roll back transaction\n16 Firewall rules  17 Configure Fail2ban  18 List backups\n0 Exit\nChoose: '
+   ui_printf title '\n=== Server Guard ===\n'
+   ui_printf success '1 Install and enable firewall\n'
+   ui_printf info '2 Ports  '; ui_printf success '3 Add port  4 Edit port  '; ui_printf error '5 Delete port\n'
+   ui_printf success '6 SSH port  7 Enable Fail2ban  '; ui_printf warning '8 Disable Fail2ban\n'
+   ui_printf info '9 Status\n'
+   ui_printf error '10 Disable firewall  11 Clear owned ports  12 Clear all rules\n'
+   ui_printf warning '13 Restore firewall  '; ui_printf success '14 Confirm transaction  '; ui_printf warning '15 Roll back transaction\n'
+   ui_printf info '16 Firewall rules  '; ui_printf success '17 Configure Fail2ban  '; ui_printf info '18 List backups\n'
+   ui_printf muted '0 Exit\n'; ui_printf prompt 'Choose: '
   else
-   printf '\n╔══════════ 服务器保护菜单 ══════════╗\n'
-   printf '\n【防火墙与端口】\n 1 安装并启用防火墙\n 2 查看端口       3 添加端口       4 修改端口\n 5 删除端口\n'
-   printf '\n【SSH 与防爆破】\n 6 切换 SSH 端口  7 启用 Fail2ban  8 停用 Fail2ban\n'
-   printf '\n【状态与维护】\n 9 查看状态\n10 关闭防火墙    11 清空自有端口  12 清空全部规则\n'
-   printf '13 恢复防火墙    14 确认变更      15 手工回退\n'
-   printf '16 查看完整规则  17 配置防爆破    18 查看备份\n 0 退出\n请选择：'
+   ui_printf title '\n╔══════════ 服务器保护菜单 ══════════╗\n'
+   ui_printf section '\n【防火墙与端口】\n'
+   ui_printf success ' 1 安装并启用防火墙\n'
+   ui_printf info ' 2 查看端口       '; ui_printf success '3 添加端口       4 修改端口\n'; ui_printf error ' 5 删除端口\n'
+   ui_printf section '\n【SSH 与防爆破】\n'
+   ui_printf success ' 6 切换 SSH 端口  7 启用 Fail2ban  '; ui_printf warning '8 停用 Fail2ban\n'
+   ui_printf section '\n【状态与维护】\n'
+   ui_printf info ' 9 查看状态\n'
+   ui_printf error '10 关闭防火墙    11 清空自有端口  12 清空全部规则\n'
+   ui_printf warning '13 恢复防火墙    '; ui_printf success '14 确认变更      '; ui_printf warning '15 手工回退\n'
+   ui_printf info '16 查看完整规则  '; ui_printf success '17 配置防爆破    '; ui_printf info '18 查看备份\n'
+   ui_printf muted ' 0 退出\n'; ui_printf prompt '请选择：'
   fi
   menu_read || return 0
   choice=$REPLY
   case $choice in
    0) return 0;;
-   2) menu_ports || say 'Port lookup failed.' '端口查询失败。';;
+   2) menu_ports || say 'Port lookup failed.' '端口查询失败。' error;;
    3|5|6)
-    if [[ $LANGUAGE == en ]]; then printf 'Port: '; else printf '端口：'; fi
+    if [[ $LANGUAGE == en ]]; then ui_printf prompt 'Port: '; else ui_printf prompt '端口：'; fi
     menu_read || return 0; first=$REPLY
     case $choice in
-     3) menu_change firewall-allow --port "$first" || say 'Action failed.' '操作失败。';;
-     5) menu_change firewall-delete --port "$first" || say 'Action failed.' '操作失败。';;
-     6) menu_change ssh-port --port "$first" || say 'Action failed.' '操作失败。';;
+     3) menu_change firewall-allow --port "$first" || say 'Action failed.' '操作失败。' error;;
+     5) menu_change firewall-delete --port "$first" || say 'Action failed.' '操作失败。' error;;
+     6) menu_change ssh-port --port "$first" || say 'Action failed.' '操作失败。' error;;
     esac;;
    4)
-    if [[ $LANGUAGE == en ]]; then printf 'Current port: '; else printf '原端口：'; fi
+    if [[ $LANGUAGE == en ]]; then ui_printf prompt 'Current port: '; else ui_printf prompt '原端口：'; fi
     menu_read || return 0; first=$REPLY
-    if [[ $LANGUAGE == en ]]; then printf 'New port: '; else printf '新端口：'; fi
+    if [[ $LANGUAGE == en ]]; then ui_printf prompt 'New port: '; else ui_printf prompt '新端口：'; fi
     menu_read || return 0; second=$REPLY
-    menu_change firewall-edit --port "$first" --to-port "$second" || say 'Action failed.' '操作失败。';;
+    menu_change firewall-edit --port "$first" --to-port "$second" || say 'Action failed.' '操作失败。' error;;
    9)
-    if ! menu_invoke status; then say 'Guard status incomplete.' '保护工具状态查询不完整。'; fi
+    if ! menu_invoke status; then say 'Guard status incomplete.' '保护工具状态查询不完整。' warning; fi
     if os systemctl is-active --quiet fail2ban; then
      if has fail2ban-client && os fail2ban-client status server-guard-sshd >/dev/null 2>&1; then
-      say 'Fail2ban: service active; this tool jail active' 'Fail2ban：服务运行中，本工具 jail 运行中'
+      say 'Fail2ban: service active; this tool jail active' 'Fail2ban：服务运行中，本工具 jail 运行中' success
      elif [[ -f $ROOT/etc/fail2ban/jail.d/server-guard.local ]] && grep -Eq '^enabled[[:space:]]*=[[:space:]]*true$' "$ROOT/etc/fail2ban/jail.d/server-guard.local"; then
-      say 'Fail2ban: service active; this tool jail not running' 'Fail2ban：服务运行中，本工具 jail 未运行'
+      say 'Fail2ban: service active; this tool jail not running' 'Fail2ban：服务运行中，本工具 jail 未运行' warning
      else
-      say 'Fail2ban: service active; this tool jail disabled' 'Fail2ban：服务运行中，本工具 jail 未启用'
+      say 'Fail2ban: service active; this tool jail disabled' 'Fail2ban：服务运行中，本工具 jail 未启用' warning
      fi
-    else say 'Fail2ban: service inactive' 'Fail2ban：服务未运行'; fi;;
-   1) menu_change firewall-setup || say 'Action failed.' '操作失败。';;
-   7) menu_change fail2ban-enable || say 'Action failed.' '操作失败。';;
-   8) menu_change fail2ban-disable || say 'Action failed.' '操作失败。';;
-   16) menu_invoke rules || say 'Rule lookup failed.' '规则查询失败。';;
-   17) menu_fail2ban_policy || say 'Action failed.' '操作失败。';;
-   18) menu_invoke backups || say 'Backup lookup failed.' '备份查询失败。';;
-   10) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。';;
-   11) menu_change firewall-clear || say 'Action failed.' '操作失败。';;
-   12) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。';;
+    else say 'Fail2ban: service inactive' 'Fail2ban：服务未运行' warning; fi;;
+   1) menu_change firewall-setup || say 'Action failed.' '操作失败。' error;;
+   7) menu_change fail2ban-enable || say 'Action failed.' '操作失败。' error;;
+   8) menu_change fail2ban-disable || say 'Action failed.' '操作失败。' error;;
+   16) menu_invoke rules || say 'Rule lookup failed.' '规则查询失败。' error;;
+   17) menu_fail2ban_policy || say 'Action failed.' '操作失败。' error;;
+   18) menu_invoke backups || say 'Backup lookup failed.' '备份查询失败。' error;;
+   10) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。' error;;
+   11) menu_change firewall-clear || say 'Action failed.' '操作失败。' error;;
+   12) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。' error;;
    13|14|15)
-    if [[ $LANGUAGE == en ]]; then printf 'Transaction ID: '; else printf '事务编号：'; fi
+    if [[ $LANGUAGE == en ]]; then ui_printf prompt 'Transaction ID: '; else ui_printf prompt '事务编号：'; fi
     menu_read || return 0; transaction=$REPLY
     case $choice in
-     13) menu_change firewall-restore --id "$transaction" || say 'Action failed.' '操作失败。';;
+     13) menu_change firewall-restore --id "$transaction" || say 'Action failed.' '操作失败。' error;;
      14)
-      if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。'; continue; fi
-      if ! menu_confirm "Keep changes for $transaction?" "是否确认保留事务 $transaction 的变更？"; then say 'Cancelled.' '已取消。'; continue; fi
-      menu_invoke confirm --id "$transaction" --apply || say 'Confirmation failed.' '确认失败。';;
+      if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。' error; continue; fi
+      if ! menu_confirm "Keep changes for $transaction?" "是否确认保留事务 $transaction 的变更？"; then say 'Cancelled.' '已取消。' muted; continue; fi
+      menu_invoke confirm --id "$transaction" --apply || say 'Confirmation failed.' '确认失败。' error;;
      15)
-      if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。'; continue; fi
-      if ! menu_confirm "Roll back transaction $transaction?" "是否回退事务 $transaction？"; then say 'Cancelled.' '已取消。'; continue; fi
-      menu_invoke rollback --id "$transaction" --apply || say 'Rollback failed.' '回退失败。';;
+      if ! id_valid "$transaction"; then say 'A valid transaction ID is required.' '必须输入有效的事务编号。' error; continue; fi
+      if ! menu_confirm "Roll back transaction $transaction?" "是否回退事务 $transaction？"; then say 'Cancelled.' '已取消。' muted; continue; fi
+      menu_invoke rollback --id "$transaction" --apply || say 'Rollback failed.' '回退失败。' error;;
     esac;;
-   *) say 'Unknown choice.' '选项无效。';;
+   *) say 'Unknown choice.' '选项无效。' warning;;
   esac
  done
 }
@@ -554,7 +591,7 @@ if [[ $MODE == menu ]]; then
 fi
 if [[ $MODE == status ]]; then
  secure_paths
- if [[ -f $STATE/pending ]]; then printf 'pending / 待确认: %s\n' "$(cat "$STATE/pending")"; else say 'No pending transaction.' '没有待确认事务。'; fi
+ if [[ -f $STATE/pending ]]; then ui_printf warning 'pending / 待确认: %s\n' "$(cat "$STATE/pending")"; else say 'No pending transaction.' '没有待确认事务。' success; fi
  exit
 fi
 if [[ $MODE == rules || $MODE == backups ]]; then
@@ -591,14 +628,14 @@ if [[ $MODE == confirm ]]; then
  if [[ $(sed -n '1p' "$TX/meta") == ssh-port ]]; then [[ $SESSION_PORT == "$(sed -n '3p' "$TX/meta")" ]] || die 'confirm must use new SSH port / 必须通过新端口确认'; fi
  se_confirm || die 'SELinux authorization changed; rollback required / SELinux授权变化，请检查并回退'
  printf '%s confirmed %s\n' "$(date -u +%FT%TZ)" "$ID" >> "$STATE/audit.log"
- rm -- "$STATE/pending"; disarm; say "Confirmed: $ID" "已确认：$ID"; exit
+ rm -- "$STATE/pending"; disarm; say "Confirmed: $ID" "已确认：$ID" success; exit
 fi
 [[ -n $ACTION ]] || die 'an action is required'
 preflight
 if [[ $MODE == plan || $DRY == 1 ]]; then
- printf 'backend=%s action=%s port=%s to_port=%s scope=%s protected_ports=%s timeout=%ss\n' "$BACKEND" "$ACTION" "$PORT" "$TO_PORT" "$SCOPE" "${PROTECTED_PORTS[*]}" "$TIMEOUT"
+ ui_printf section 'backend=%s action=%s port=%s to_port=%s scope=%s protected_ports=%s timeout=%ss\n' "$BACKEND" "$ACTION" "$PORT" "$TO_PORT" "$SCOPE" "${PROTECTED_PORTS[*]}" "$TIMEOUT"
  if [[ $ACTION == fail2ban-enable ]]; then
-  printf 'fail2ban maxretry=%s findtime=%s bantime=%s\n' "${F2B_MAXRETRY:-inherit}" "${F2B_FINDTIME:-inherit}" "${F2B_BANTIME:-inherit}"
+  ui_printf info 'fail2ban maxretry=%s findtime=%s bantime=%s\n' "${F2B_MAXRETRY:-inherit}" "${F2B_FINDTIME:-inherit}" "${F2B_BANTIME:-inherit}"
   say 'findtime/bantime are seconds. Unspecified limits keep this jail values or system defaults.' 'findtime/bantime单位为秒；inherit沿用本工具已有值或系统默认值。'
  fi
  say 'Plan only; no files, services or firewall rules changed.' '仅预览；未修改文件、服务或防火墙规则。'; exit
@@ -632,5 +669,5 @@ NETWORK_STARTED=1
 mutate
 printf '%s applied %s %s\n' "$(date -u +%FT%TZ)" "$ID" "$ACTION" >> "$STATE/audit.log"
 trap - EXIT
-printf 'pending / 待确认: %s\n' "$ID"
-say 'Open a NEW SSH session and confirm --id ID --apply before the deadline. Old SSH ports remain allowed.' '请在截止前通过新的SSH会话执行 confirm --id 编号 --apply。旧SSH端口保留。'
+ui_printf warning 'pending / 待确认: %s\n' "$ID"
+say 'Open a NEW SSH session and confirm --id ID --apply before the deadline. Old SSH ports remain allowed.' '请在截止前通过新的SSH会话执行 confirm --id 编号 --apply。旧SSH端口保留。' warning

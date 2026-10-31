@@ -31,7 +31,7 @@ done
 install -d -m 755 "$target" "$prefix/bin"
 printf '%s\n' 'vpsmanager-server-guard-v1' > "$target/.vpsmanager-guard"
 for file in server-guard.sh backends.sh selinux.sh; do install -m 755 "$HERE/$file" "$target/$file"; done
-printf '#!/bin/bash\n# vpsmanager-server-guard-launcher-v1\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin\nif [[ $(id -u) != 0 ]]; then exec sudo --preserve-env=SSH_CONNECTION /bin/bash %q "$@"; fi\nexec /bin/bash %q "$@"\n' "$target/server-guard.sh" "$target/server-guard.sh" > "$launcher"
+printf '#!/bin/bash\n# vpsmanager-server-guard-launcher-v1\nexport PATH=/usr/sbin:/usr/bin:/sbin:/bin\nif [[ $(id -u) != 0 ]]; then exec sudo --preserve-env=SSH_CONNECTION,NO_COLOR /bin/bash %q "$@"; fi\nexec /bin/bash %q "$@"\n' "$target/server-guard.sh" "$target/server-guard.sh" > "$launcher"
 chmod 755 "$launcher"
 legacy=$prefix/bin/vpsguard
 if [[ -f $legacy && ! -L $legacy ]] && cmp -s "$legacy" <(printf '#!/usr/bin/env bash\n# vpsmanager-server-guard-launcher-v1\nexec %q "$@"\n' "$target/server-guard.sh"); then rm -- "$legacy"; fi

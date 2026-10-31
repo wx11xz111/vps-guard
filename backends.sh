@@ -38,7 +38,7 @@ setup_firewall() (
  setup_empty_rules
  [[ ! -f $STATE/pending ]] || die 'Confirm or roll back pending changes first / 请先处理待确认变更'
  say "Install/enable $service; preserve SSH TCP ports: ${PROTECTED_PORTS[*]}. Other services may need additional ports." "安装并启用 $service；先放行 SSH TCP 端口：${PROTECTED_PORTS[*]}。其他业务端口请另行放行。"
- say 'Allow these ports in your cloud security group and retain rescue-console access.' '请先在云安全组放行以上端口，并保留救援控制台入口。'
+ say 'Allow these ports in your cloud security group and retain rescue-console access.' '请先在云安全组放行以上端口，并保留救援控制台入口。' warning
  [[ $MODE != plan && $DRY == 0 ]] || return 0
  [[ $APPLY == 1 ]] || die '--apply required / 需要--apply'
  lock_state
@@ -50,7 +50,7 @@ setup_firewall() (
   if ((started && !success)); then
    if [[ $service == ufw ]]; then os ufw --force disable || true; else os systemctl stop firewalld || true; fi
    if ((enable_changed)); then os systemctl disable "$service" || true; fi
-   say "Activation failed; attempted to stop the firewall. Check the console if cleanup failed." "启用失败，已尝试停止防火墙；如清理报错请通过控制台检查。" >&2
+   say "Activation failed; attempted to stop the firewall. Check the console if cleanup failed." "启用失败，已尝试停止防火墙；如清理报错请通过控制台检查。" error >&2
   fi
   [[ -z $work ]] || rm -rf -- "$work"
   exit "$rc"
@@ -122,7 +122,7 @@ setup_firewall() (
  [[ $status == enabled ]] || enable_changed=1
  os systemctl enable "$service"
  success=1
- say "Firewall enabled: $service. Open a new SSH connection to verify access." "防火墙已启用：$service。请新建 SSH 连接验证访问。"
+ say "Firewall enabled: $service. Open a new SSH connection to verify access." "防火墙已启用：$service。请新建 SSH 连接验证访问。" success
 )
 detect_backend() {
  local SESSION_PORT=${SESSION_PORT:-unknown}

@@ -24,5 +24,5 @@ if [[ $(id -u) == 0 ]]; then
  bash "$stage/install.sh" --launch < /dev/tty
 else
  command -v sudo >/dev/null || { echo '需要 sudo 或 root' >&2; exit 1; }
- sudo --preserve-env=SSH_CONNECTION bash "$stage/install.sh" --launch < /dev/tty
+ sudo --preserve-env=SSH_CONNECTION,NO_COLOR bash "$stage/install.sh" --launch < /dev/tty
 fi
