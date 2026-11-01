@@ -6,7 +6,7 @@ umask 077
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 LANGUAGE=zh ROOT='' ADAPTER='' MODE=${1:-menu} ACTION='' PORT='' TO_PORT='' ID='' SCOPE=owned APPLY=0 DRY=0 BACKEND_REQUEST='' MENU_EXTRA=0
 F2B_MAXRETRY='' F2B_FINDTIME='' F2B_BANTIME='' F2B_OPTIONS=0
-F2B_INSTALL=0
+F2B_INSTALL=0 TARGET_IP='' FW_OFFLINE=0 SSH_SOCKET='' SSH_SERVICE=''
 [[ $# == 0 ]] || shift
 ui_printf() {
  local tone=$1 color='' reset=''
@@ -52,15 +52,15 @@ while (($#)); do
  case $1 in
   --apply) APPLY=1; MENU_EXTRA=1; shift;;
   --dry-run) DRY=1; MENU_EXTRA=1; shift;;
-  --lang|--port|--to-port|--scope|--backend|--maxretry|--findtime|--bantime)
+  --lang|--port|--to-port|--scope|--backend|--maxretry|--findtime|--bantime|--ip)
    (($# >= 2)) || die 'missing option value / 缺少参数值'
    case $1 in --maxretry|--findtime|--bantime) [[ -n $2 ]] || die 'missing Fail2ban option value / 缺少封禁参数值';; esac
-   case $1 in --lang) LANGUAGE=$2;; --port) PORT=$2; MENU_EXTRA=1;; --to-port) TO_PORT=$2; MENU_EXTRA=1;; --scope) SCOPE=$2; MENU_EXTRA=1;; --backend) BACKEND_REQUEST=$2; MENU_EXTRA=1;;
+   case $1 in --lang) LANGUAGE=$2;; --port) PORT=$2; MENU_EXTRA=1;; --to-port) TO_PORT=$2; MENU_EXTRA=1;; --scope) SCOPE=$2; MENU_EXTRA=1;; --backend) BACKEND_REQUEST=$2; MENU_EXTRA=1;; --ip) TARGET_IP=$2; MENU_EXTRA=1;;
     --maxretry) F2B_MAXRETRY=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
     --findtime) F2B_FINDTIME=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
     --bantime) F2B_BANTIME=$2; F2B_OPTIONS=1; MENU_EXTRA=1;;
    esac; shift 2;;
-  firewall-setup|firewall-allow|firewall-edit|firewall-delete|firewall-disable|firewall-clear|ssh-port|fail2ban-enable|fail2ban-disable)
+  firewall-setup|firewall-start|firewall-restart|firewall-allow|firewall-edit|firewall-delete|firewall-disable|firewall-clear|ssh-port|fail2ban-enable|fail2ban-disable|fail2ban-restart|fail2ban-unban|fail2ban-whitelist)
    [[ -z $ACTION ]] || die 'only one action / 每次仅一个动作'; ACTION=$1; shift;;
   *) die 'unknown argument / 未知参数';;
  esac
@@ -72,7 +72,11 @@ done
 [[ -z $TO_PORT || $ACTION == firewall-edit ]] || die '--to-port is only for firewall-edit'
 [[ -z $BACKEND_REQUEST || $BACKEND_REQUEST =~ ^(nftables|iptables|ufw|firewalld)$ ]] || die 'invalid backend'
 case $MODE in confirm|rollback) die 'Confirmation and rollback commands were removed; successful changes take effect immediately / 确认和回退命令已取消，成功执行后直接生效';; esac
-[[ $MODE =~ ^(menu|status|ports|rules|backups|plan|apply|recover)$ ]] || die 'use menu/status/ports/rules/backups/plan/apply'
+[[ $MODE =~ ^(menu|status|ports|rules|backups|fail2ban-status|fail2ban-logs|plan|apply|recover)$ ]] || die 'use menu/status/ports/rules/backups/fail2ban-status/fail2ban-logs/plan/apply'
+if [[ $ACTION == fail2ban-unban || $ACTION == fail2ban-whitelist ]]; then
+ address_valid "$TARGET_IP" || die '--ip requires a valid IPv4/IPv6 address / 请输入有效IPv4或IPv6地址'
+else [[ -z $TARGET_IP ]] || die '--ip is only for fail2ban-unban/fail2ban-whitelist'; fi
+case $ACTION in firewall-start|firewall-restart|firewall-disable|fail2ban-*) [[ -z $PORT$TO_PORT ]] || die 'this action takes no port options / 此操作不接受端口参数';; esac
 if ((F2B_OPTIONS)); then
  [[ ($MODE == plan || $MODE == apply) && $ACTION == fail2ban-enable ]] || die 'Fail2ban options require plan/apply fail2ban-enable / 封禁参数仅用于启用Fail2ban'
  for setting in "$F2B_MAXRETRY:100" "$F2B_FINDTIME:604800" "$F2B_BANTIME:31536000"; do
@@ -97,7 +101,7 @@ has() { if [[ -n $ADAPTER ]]; then os command-exists "$1"; else command -v "$1" 
 need() { has "$1" || die "missing $1; install explicitly: apt install $2 / dnf install $3 (不会自动安装)"; }
 STATE=$ROOT/var/lib/server-guard
 UNITS=$ROOT/etc/systemd/system
-CONFIG_PATHS=(etc/nftables.conf etc/iptables etc/sysconfig/iptables etc/sysconfig/ip6tables etc/ufw etc/default/ufw etc/firewalld etc/ssh/sshd_config etc/fail2ban/jail.d/server-guard.local var/lib/server-guard/firewalld.owned)
+CONFIG_PATHS=(etc/nftables.conf etc/iptables etc/sysconfig/iptables etc/sysconfig/ip6tables etc/ufw etc/default/ufw etc/firewalld etc/ssh/sshd_config etc/fail2ban/jail.d/server-guard.local var/lib/server-guard/firewalld.owned var/lib/server-guard/firewall.backend)
 # shellcheck source=backends.sh
 source "$HERE/backends.sh"
 # shellcheck source=selinux.sh
@@ -171,6 +175,7 @@ discover() {
  mapfile -t PORTS < <(printf '%s\n' "${PORTS[@]}" | sort -nu)
  PROTECTED_PORTS=("${PORTS[@]}")
  case $ACTION in firewall-allow|ssh-port) [[ -z $PORT ]] || PORTS+=("$PORT");; firewall-edit) [[ -z $TO_PORT ]] || PORTS+=("$TO_PORT");; esac
+ mapfile -t PORTS < <(printf '%s\n' "${PORTS[@]}" | sort -nu)
 }
 preflight() {
  platform; secure_paths; discover
@@ -198,9 +203,14 @@ preflight() {
  fi
  if [[ $ACTION == ssh-port ]]; then
   [[ -n $PORT ]] || die '--port required'
-  if os systemctl is-active --quiet ssh.socket || os systemctl is-active --quiet sshd.socket || os systemctl is-enabled --quiet ssh.socket || os systemctl is-enabled --quiet sshd.socket; then die 'socket-activated SSH unsupported; no changes / socket激活暂不支持'; fi
+  ssh_service_preflight
   se_preflight || die 'SELinux preflight failed / SELinux预检失败'
   os sshd -t -f "$ROOT/etc/ssh/sshd_config" || die 'sshd -t failed'
+  ssh_port_available
+  if [[ -f $ROOT/etc/fail2ban/jail.d/server-guard.local ]]; then
+   need fail2ban-client fail2ban fail2ban-server
+   os fail2ban-client -t >/dev/null || die 'Fix Fail2ban configuration before changing SSH ports / 请先修复Fail2ban配置再修改SSH端口'
+  fi
  fi
  F2B_INSTALL=0
  if [[ $ACTION == fail2ban-* ]]; then
@@ -211,6 +221,12 @@ preflight() {
    F2B_INSTALL=1
    say 'Fail2ban is missing; after confirmation, install its server and systemd journal bindings, then enable the SSH jail.' '未安装Fail2ban；确认后将安装服务端及systemd日志依赖，再启用SSH防爆破。' warning
   else need fail2ban-client fail2ban fail2ban; fi
+  if [[ $ACTION == fail2ban-restart || $ACTION == fail2ban-unban || $ACTION == fail2ban-whitelist ]]; then
+   [[ -f $ROOT/etc/fail2ban/jail.d/server-guard.local ]] || die 'Enable the tool SSH protection first / 请先安装并启用本工具SSH防护'
+  fi
+  if [[ $ACTION == fail2ban-unban ]]; then
+   os fail2ban-client status server-guard-sshd >/dev/null || die 'SSH jail is not running / SSH防护未运行'
+  fi
  fi
  [[ $ACTION != firewall-allow || -n $PORT ]] || die '--port required'
 }
@@ -280,7 +296,7 @@ list_backups() {
   fi
   action=$(sed -n '1p' "$saved/meta"); backend=$(sed -n '2p' "$saved/meta")
   # Do not render arbitrary backup metadata as terminal text.
-  case $action in firewall-allow|firewall-edit|firewall-delete|firewall-clear|firewall-disable|ssh-port|fail2ban-enable|fail2ban-disable) :;; *) action=unknown;; esac
+  case $action in firewall-start|firewall-restart|firewall-allow|firewall-edit|firewall-delete|firewall-clear|firewall-disable|ssh-port|fail2ban-enable|fail2ban-disable|fail2ban-restart|fail2ban-unban|fail2ban-whitelist) :;; *) action=unknown;; esac
   case $backend in nftables|iptables|ufw|firewalld|none) :;; *) backend=unknown;; esac
   status=saved
   if [[ -f $STATE/audit.log ]]; then
@@ -299,7 +315,7 @@ list_backups() {
 }
 save_services() {
  local s active enabled
- for s in nftables netfilter-persistent iptables ip6tables ufw firewalld fail2ban; do
+ for s in nftables netfilter-persistent iptables ip6tables ufw firewalld fail2ban ssh sshd ssh.socket sshd.socket; do
   active=0; enabled=0
   os systemctl is-active --quiet "$s" && active=1
   os systemctl is-enabled --quiet "$s" && enabled=1
@@ -389,11 +405,141 @@ apply_change() (
  trap - EXIT
  say "Applied. Backup: $ID" "已生效。备份编号：$ID" success
 )
-reload_ssh() { if os systemctl is-active --quiet ssh; then os systemctl reload ssh; elif os systemctl is-active --quiet sshd; then os systemctl reload sshd; else return 1; fi; }
+ssh_service_preflight() {
+ local socket status
+ SSH_SOCKET='' SSH_SERVICE=''
+ for socket in ssh.socket sshd.socket; do
+  if os systemctl is-active --quiet "$socket" || os systemctl is-enabled --quiet "$socket"; then
+   [[ -z $SSH_SOCKET ]] || die 'Multiple SSH sockets are enabled / 多个SSH socket冲突'
+   SSH_SOCKET=$socket
+  fi
+ done
+ if [[ -n $SSH_SOCKET ]]; then
+  SSH_SERVICE=${SSH_SOCKET%.socket}.service
+  [[ $(os systemctl show -p KillMode --value "$SSH_SERVICE") == process ]] || die 'Socket migration requires KillMode=process to preserve current sessions / SSH服务需使用KillMode=process才支持保留连接切换'
+  [[ $(os systemctl show -p SendSIGHUP --value "$SSH_SERVICE") == no ]] || die 'Socket migration requires SendSIGHUP=no / SSH服务需关闭SendSIGHUP以保留当前会话'
+  status=$(os systemctl is-enabled "$SSH_SERVICE" 2>/dev/null || true)
+  [[ $status != masked* ]] || die 'SSH service was masked by administrator / SSH服务已被管理员屏蔽'
+ fi
+}
+reload_ssh() {
+ if [[ -n $SSH_SOCKET ]]; then
+  say 'Switching socket activation to the SSH service; existing session processes are retained.' '正在从socket激活切换为SSH服务监听，保留现有会话进程。' warning
+  os systemctl disable --now "$SSH_SOCKET"
+  os systemctl enable "$SSH_SERVICE"
+  os systemctl restart "$SSH_SERVICE"
+ elif os systemctl is-active --quiet ssh; then os systemctl reload ssh
+ elif os systemctl is-active --quiet sshd; then os systemctl reload sshd
+ else return 1; fi
+}
+ssh_port_available() {
+ local output localaddr rest
+ output=$(os ss -H -ltnp) || die 'Cannot inspect TCP listeners / 无法检查TCP端口占用'
+ while read -r _ _ _ localaddr rest; do
+  [[ ${localaddr##*:} != "$PORT" || $rest == *'"sshd"'* ]] || die "TCP port $PORT is occupied by another process / 新端口已被其他进程占用"
+ done <<< "$output"
+}
+ssh_verify_listener() {
+ local output localaddr rest attempt
+ for attempt in {1..5}; do
+  output=$(os ss -H -ltnp) || return 1
+  while read -r _ _ _ localaddr rest; do
+   [[ ${localaddr##*:} != "$PORT" || $rest != *'"sshd"'* ]] || return 0
+  done <<< "$output"
+  sleep 1
+ done
+ die "SSH did not listen on TCP $PORT / SSH新端口未监听，请保留当前连接检查"
+}
+fail2ban_value() {
+ local key=$1 file=$ROOT/etc/fail2ban/jail.d/server-guard.local
+ [[ -f $file ]] || return 0
+ awk -v key="$key" '
+  /^[[:space:]]*\[/ {section=$0; sub(/^[[:space:]]*/,"",section); sub(/\].*$/,"]",section); own=(section=="[server-guard-sshd]")}
+  own && /^[[:space:]]*[^#;][^=]*=/ {name=$0; sub(/=.*/,"",name); gsub(/[[:space:]]/,"",name); if(name==key){value=$0; sub(/^[^=]*=[[:space:]]*/,"",value); print value}}
+ ' "$file"
+}
+fail2ban_update() {
+ local mode=$1 file=$ROOT/etc/fail2ban/jail.d/server-guard.local enabled ignore key value
+ mkdir -p "${file%/*}"
+ enabled=$(fail2ban_value enabled); enabled=${enabled:-false}; enabled=${enabled,,}
+ case $mode in enable) enabled=true;; disable) enabled=false;; esac
+ ignore=$(fail2ban_value ignoreip)
+ ignore="${ignore:+$ignore }127.0.0.1/8 ::1 $CLIENT"
+ [[ $mode != whitelist ]] || ignore+=" $TARGET_IP"
+ ignore=$(awk '{for(i=1;i<=NF;i++)if(!seen[$i]++){printf "%s%s",sep,$i;sep=" "}} END {print ""}' <<< "$ignore")
+ if [[ -f $file ]]; then
+  # Preserve other sections and every unknown setting in the tool jail.
+  awk '/^[[:space:]]*\[/ {section=$0; sub(/^[[:space:]]*/,"",section); sub(/\].*$/,"]",section); own=(section=="[server-guard-sshd]")} !own' "$file" > "$TX/fail2ban.new"
+  awk '/^[[:space:]]*\[/ {section=$0; sub(/^[[:space:]]*/,"",section); sub(/\].*$/,"]",section); own=(section=="[server-guard-sshd]"); next} own && $0 !~ /^[[:space:]]*(filter|backend|enabled|port|ignoreip)[[:space:]]*=/' "$file" > "$TX/fail2ban.policy"
+ else : > "$TX/fail2ban.new"; : > "$TX/fail2ban.policy"; fi
+ {
+  printf '\n[server-guard-sshd]\nfilter = sshd\nbackend = systemd\nenabled = %s\n' "$enabled"
+  printf 'port = %s\nignoreip = %s\n' "$(IFS=,; echo "${PORTS[*]}")" "$ignore"
+  cat "$TX/fail2ban.policy"
+ } >> "$TX/fail2ban.new"
+ for key in maxretry findtime bantime; do
+  case $key in maxretry) value=$F2B_MAXRETRY;; findtime) value=$F2B_FINDTIME;; bantime) value=$F2B_BANTIME;; esac
+  if [[ -z $value && $mode == enable ]] && ! grep -Eq "^[[:space:]]*$key[[:space:]]*=" "$TX/fail2ban.policy"; then
+   case $key in maxretry) value=5;; findtime) value=600;; bantime) value=3600;; esac
+  fi
+  if [[ -n $value ]]; then
+   # The appended jail is last; remove only its previous value.
+   awk -v key="$key" '/^[[:space:]]*\[/ {section=$0; sub(/^[[:space:]]*/,"",section); sub(/\].*$/,"]",section); own=(section=="[server-guard-sshd]")} own && $0 ~ ("^[[:space:]]*" key "[[:space:]]*=") {next} {print}' "$TX/fail2ban.new" > "$TX/fail2ban.edit"
+   mv "$TX/fail2ban.edit" "$TX/fail2ban.new"
+   printf '%s = %s\n' "$key" "$value" >> "$TX/fail2ban.new"
+  fi
+ done
+ cat "$TX/fail2ban.new" > "$file"
+ os fail2ban-client -t >/dev/null || die 'Fail2ban configuration validation failed / Fail2ban配置校验失败'
+}
+fail2ban_ready() {
+ local attempt
+ for attempt in {1..10}; do
+  if os fail2ban-client status server-guard-sshd >/dev/null 2>&1; then return 0; fi
+  sleep 1
+ done
+ die 'Fail2ban SSH jail did not start / Fail2ban SSH防护未启动'
+}
+fail2ban_sync_ssh() {
+ local file=$ROOT/etc/fail2ban/jail.d/server-guard.local
+ if [[ ! -f $file ]]; then
+  say 'Tool Fail2ban jail is not configured; SSH ports were not added to other jails.' '尚未配置本工具Fail2ban防护；可用菜单7启用，其他jail请自行检查端口。' warning
+  return 0
+ fi
+ say 'Synchronizing Fail2ban SSH ports.' '正在同步Fail2ban SSH防护端口。'
+ fail2ban_update sync
+ if os systemctl is-active --quiet fail2ban && [[ $(fail2ban_value enabled) == true ]]; then
+  os fail2ban-client reload server-guard-sshd
+  [[ $(fail2ban_value enabled) != true ]] || fail2ban_ready
+ else say 'Fail2ban port configuration saved; protection activation is unchanged.' 'Fail2ban端口已保存，保留原防护启停状态。' warning; fi
+}
+fail2ban_status() {
+ if ! has fail2ban-client; then say 'Fail2ban: not installed. Choose 7 to install and enable protection.' 'Fail2ban：未安装，可选择7安装并启用防护。' warning; return 0; fi
+ if ! os systemctl is-active --quiet fail2ban; then say 'Fail2ban: service stopped.' 'Fail2ban：服务未运行。' warning; return 0; fi
+ say 'Fail2ban: service active.' 'Fail2ban：服务运行中。' success
+ if os fail2ban-client status server-guard-sshd; then
+  say 'Tool SSH jail is running.' '本工具 jail 运行中。' success
+  local key value
+  for key in port maxretry findtime bantime ignoreip; do value=$(fail2ban_value "$key"); ui_printf info '%s = %s\n' "$key" "${value:-inherit}"; done
+ else say 'This tool SSH jail is not running. Choose 7 to enable it.' '本工具SSH防护未运行，可选择7启用。' warning; fi
+}
+fail2ban_logs() {
+ need journalctl systemd systemd
+ os journalctl -u fail2ban --no-pager -n 80 || die 'Cannot read Fail2ban journal / 无法读取Fail2ban日志'
+ if [[ -f $ROOT/var/log/fail2ban.log ]]; then
+  say 'Recent file log (last 40 lines):' '最近文件日志（40行）：'
+  tail -n 40 -- "$ROOT/var/log/fail2ban.log"
+ fi
+}
 mutate() {
  if [[ $ACTION == ssh-port ]]; then
   local p
-  { for p in "${PORTS[@]}"; do printf 'Port %s\n' "$p"; done; cat "$ROOT/etc/ssh/sshd_config"; } > "$TX/sshd.new"
+  {
+   for p in "${PORTS[@]}"; do printf 'Port %s\n' "$p"; done
+   # Normalize global Port directives instead of growing duplicate headers on
+   # every operation. Keep Include, comments and Match sections unchanged.
+   awk 'tolower($0) ~ /^[[:space:]]*match[[:space:]]/ {matched=1} !matched && tolower($0) ~ /^[[:space:]]*port([[:space:]]|=)/ {next} {print}' "$ROOT/etc/ssh/sshd_config"
+  } > "$TX/sshd.new"
   os sshd -t -f "$TX/sshd.new"
   se_apply
  fi
@@ -404,38 +550,28 @@ mutate() {
    cp -- "$TX/sshd.new" "$ROOT/etc/ssh/sshd_config"
    se_restore_context
    os sshd -t -f "$ROOT/etc/ssh/sshd_config"
-   reload_ssh;;
+   say 'Reloading SSH and checking its new listener.' '正在重载SSH并核对新端口监听。'
+   reload_ssh
+   ssh_verify_listener
+   fail2ban_sync_ssh
+   say "SSH TCP $PORT is listening; previous SSH ports remain available." "SSH TCP $PORT 已监听，原SSH端口继续保留；请在云安全组放行新端口。" success;;
   fail2ban-enable|fail2ban-disable)
-   mkdir -p "$ROOT/etc/fail2ban/jail.d"
-   local policy=''
-   if [[ -f $ROOT/etc/fail2ban/jail.d/server-guard.local ]]; then
-    # Keep this jail's existing limits unless the caller explicitly replaces them.
-    policy=$(awk -v retries="$F2B_MAXRETRY" -v window="$F2B_FINDTIME" -v duration="$F2B_BANTIME" '
-     /^\[/ {own=($0=="[server-guard-sshd]")}
-     own && /^[[:space:]]*maxretry[[:space:]]*=/ && retries=="" {print}
-     own && /^[[:space:]]*findtime[[:space:]]*=/ && window=="" {print}
-     own && /^[[:space:]]*bantime[[:space:]]*=/ && duration=="" {print}
-    ' "$ROOT/etc/fail2ban/jail.d/server-guard.local")
-   fi
-   { printf '[server-guard-sshd]\nfilter = sshd\nbackend = systemd\nenabled = %s\n' "$([[ $ACTION == fail2ban-enable ]] && echo true || echo false)"
-     printf 'port = %s\n' "$(IFS=,; echo "${PORTS[*]}")"
-     printf 'ignoreip = 127.0.0.1/8 ::1 %s\n' "$CLIENT"
-   } > "$ROOT/etc/fail2ban/jail.d/server-guard.local"
-   [[ -z $policy ]] || printf '%s\n' "$policy" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
-   [[ -z $F2B_MAXRETRY ]] || printf 'maxretry = %s\n' "$F2B_MAXRETRY" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
-   [[ -z $F2B_FINDTIME ]] || printf 'findtime = %s\n' "$F2B_FINDTIME" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
-   [[ -z $F2B_BANTIME ]] || printf 'bantime = %s\n' "$F2B_BANTIME" >> "$ROOT/etc/fail2ban/jail.d/server-guard.local"
-   os fail2ban-client -t >/dev/null
+   fail2ban_update "${ACTION#fail2ban-}"
    if [[ $ACTION == fail2ban-enable ]]; then
     os systemctl enable fail2ban
     os systemctl reload-or-restart fail2ban
-    local ready=0 attempt
-    for attempt in {1..10}; do
-     if os fail2ban-client status server-guard-sshd >/dev/null 2>&1; then ready=1; break; fi
-     sleep 1
-    done
-    ((ready)) || die 'Fail2ban SSH jail did not start / Fail2ban SSH防护未启动'
-   elif os systemctl is-active --quiet fail2ban; then os systemctl reload-or-restart fail2ban; fi;;
+    fail2ban_ready
+   elif os systemctl is-active --quiet fail2ban; then os fail2ban-client reload; fi;;
+  fail2ban-restart)
+   os systemctl restart fail2ban
+   [[ $(fail2ban_value enabled) != true ]] || fail2ban_ready;;
+  fail2ban-unban) os fail2ban-client set server-guard-sshd unbanip "$TARGET_IP";;
+  fail2ban-whitelist)
+   fail2ban_update whitelist
+   if os systemctl is-active --quiet fail2ban && [[ $(fail2ban_value enabled) == true ]]; then
+    os fail2ban-client reload server-guard-sshd
+    if [[ $(fail2ban_value enabled) == true ]]; then fail2ban_ready; os fail2ban-client set server-guard-sshd unbanip "$TARGET_IP"; fi
+   fi;;
  esac
 }
 menu_invoke() { bash "$HERE/server-guard.sh" "$@" --lang "$LANGUAGE"; }
@@ -484,14 +620,72 @@ menu_change() {
 }
 menu_fail2ban_policy() {
  local retries window duration
- say 'Configure the tool SSH jail. Blank uses 5 retries / 600s window / 3600s ban.' '配置本工具SSH防爆破：回车采用5次重试、600秒统计窗口、3600秒封禁。'
+ retries=$(fail2ban_value maxretry); retries=${retries:-5}
+ window=$(fail2ban_value findtime); window=${window:-600}
+ duration=$(fail2ban_value bantime); duration=${duration:-3600}
+ say "Configure SSH protection. Blank keeps: retries=$retries / window=${window}s / ban=${duration}s." "配置SSH防爆破：回车保留当前值，失败次数=$retries、统计窗口=$window 秒、封禁=$duration 秒。"
  say 'Maximum retries (1..100):' '最大失败次数（1..100）：' prompt
- menu_read || return 0; retries=${REPLY:-5}
+ menu_read || return 0; retries=${REPLY:-$retries}
  say 'Failure window in seconds (1..604800):' '统计窗口秒数（1..604800）：' prompt
- menu_read || return 0; window=${REPLY:-600}
+ menu_read || return 0; window=${REPLY:-$window}
  say 'Ban duration in seconds (1..31536000):' '封禁秒数（1..31536000）：' prompt
- menu_read || return 0; duration=${REPLY:-3600}
+ menu_read || return 0; duration=${REPLY:-$duration}
  menu_change fail2ban-enable --maxretry "$retries" --findtime "$window" --bantime "$duration"
+}
+menu_fail2ban() {
+ local choice address
+ while :; do
+  say '=== Fail2ban protection ===' '=== Fail2ban 防护管理 ===' title
+  if [[ $LANGUAGE == en ]]; then
+   ui_printf info '1 Status and bans  '; ui_printf success '2 Install/enable  3 Parameters\n'
+   ui_printf warning '4 Disable tool SSH jail  5 Restart Fail2ban service\n'
+   ui_printf success '6 Unban IP  7 Add whitelist IP  '; ui_printf info '8 Logs\n'
+   ui_printf muted '0 Back\n'; ui_printf prompt 'Choose: '
+  else
+   ui_printf info '1 状态与封禁列表  '; ui_printf success '2 安装并启用  3 防护参数\n'
+   ui_printf warning '4 停用本工具SSH防护  5 重启Fail2ban服务\n'
+   ui_printf success '6 解封IP  7 添加白名单IP  '; ui_printf info '8 查看日志\n'
+   ui_printf muted '0 返回主菜单\n'; ui_printf prompt '请选择：'
+  fi
+  menu_read || return 0; choice=$REPLY
+  case $choice in
+   0) return 0;;
+   1) menu_invoke fail2ban-status || say 'Status lookup failed.' '状态查询失败。' error;;
+   2) menu_change fail2ban-enable || say 'Action failed.' '操作失败。' error;;
+   3) menu_fail2ban_policy || say 'Action failed.' '操作失败。' error;;
+   4) menu_change fail2ban-disable || say 'Action failed.' '操作失败。' error;;
+   5) menu_change fail2ban-restart || say 'Action failed.' '操作失败。' error;;
+   6|7)
+    if [[ $choice == 6 ]]; then menu_invoke fail2ban-status || true; fi
+    say 'IPv4/IPv6 address (blank cancels):' 'IPv4/IPv6地址（留空取消）：' prompt
+    menu_read || return 0; address=$REPLY
+    [[ -n $address ]] || continue
+    if [[ $choice == 6 ]]; then menu_change fail2ban-unban --ip "$address" || say 'Action failed.' '操作失败。' error
+    else menu_change fail2ban-whitelist --ip "$address" || say 'Action failed.' '操作失败。' error; fi;;
+   8) menu_invoke fail2ban-logs || say 'Log lookup failed.' '日志查询失败。' error;;
+   *) say 'Unknown choice.' '选项无效。' warning;;
+  esac
+ done
+}
+protection_status() {
+ say 'Changes take effect immediately; no confirmation or automatic rollback.' '操作成功后直接生效，无需二次确认，不自动回退。' success
+ (
+  detect_backend
+  local state=inactive
+  case $BACKEND in
+   ufw) [[ $(os ufw status) != 'Status: active'* ]] || state=active;;
+   firewalld) ! os systemctl is-active --quiet firewalld || state=active;;
+   nftables) [[ -z $(os nft list table inet filter 2>/dev/null) ]] || state=active;;
+   iptables) if os systemctl is-active --quiet netfilter-persistent || os systemctl is-active --quiet iptables || os systemctl is-active --quiet ip6tables; then state=active; fi;;
+  esac
+  say "Firewall: $BACKEND ($state)" "防火墙：$BACKEND（$state）"
+ ) || say 'Firewall manager unavailable or conflicting; check native rules.' '防火墙管理器未识别或存在冲突，请检查实际规则。' warning
+ local config ports
+ if config=$(os sshd -T -f "$ROOT/etc/ssh/sshd_config"); then
+  ports=$(awk '$1=="port" {printf "%s ", $2}' <<< "$config")
+  say "SSH configured TCP ports: $ports" "SSH配置TCP端口：$ports"
+ else say 'Cannot read effective SSH configuration.' '无法读取SSH有效配置。' warning; fi
+ fail2ban_status
 }
 menu() {
  local choice first second
@@ -500,22 +694,26 @@ menu() {
   if [[ $LANGUAGE == en ]]; then
    ui_printf title '\n=== Server Guard ===\n'
    ui_printf success '1 Install and enable firewall\n'
+   ui_printf success '19 Start firewall  20 Reload/restart firewall  '; ui_printf warning '10 Stop firewall (keep rules)\n'
    ui_printf info '2 Ports  '; ui_printf success '3 Add port  4 Edit port  '; ui_printf error '5 Delete port\n'
-   ui_printf success '6 SSH port  7 Install and enable Fail2ban  '; ui_printf warning '8 Disable Fail2ban\n'
+   ui_printf success '6 SSH port  7 Install and enable Fail2ban  '; ui_printf warning '8 Disable tool SSH protection\n'
    ui_printf info '9 Status\n'
-   ui_printf error '10 Disable firewall  11 Clear owned ports  12 Clear all rules\n'
+   ui_printf error '11 Clear owned ports  12 Clear all rules\n'
+   ui_printf info '21 Fail2ban protection management\n'
    ui_printf info '16 Firewall rules  '; ui_printf success '17 Configure Fail2ban  '; ui_printf info '18 List backups\n'
    ui_printf muted '0 Exit\n'; ui_printf prompt 'Choose: '
   else
    ui_printf title '\n╔══════════ 服务器保护菜单 ══════════╗\n'
    ui_printf section '\n【防火墙与端口】\n'
    ui_printf success ' 1 安装并启用防火墙\n'
+   ui_printf success '19 启动防火墙    20 重启/重载防火墙  '; ui_printf warning '10 关闭防火墙（保留规则）\n'
    ui_printf info ' 2 查看端口       '; ui_printf success '3 添加端口       4 修改端口\n'; ui_printf error ' 5 删除端口\n'
    ui_printf section '\n【SSH 与防爆破】\n'
-   ui_printf success ' 6 切换 SSH 端口  7 安装并启用 Fail2ban  '; ui_printf warning '8 停用 Fail2ban\n'
+   ui_printf success ' 6 切换 SSH 端口  7 安装并启用 Fail2ban  '; ui_printf warning '8 停用本工具SSH防护\n'
+   ui_printf info '21 Fail2ban防护管理（状态/参数/解封/白名单/日志）\n'
    ui_printf section '\n【状态与维护】\n'
    ui_printf info ' 9 查看状态\n'
-   ui_printf error '10 关闭防火墙    11 清空自有端口  12 清空全部规则\n'
+   ui_printf error '11 清空自有端口  12 清空全部规则\n'
    ui_printf info '16 查看完整规则  '; ui_printf success '17 配置防爆破    '; ui_printf info '18 查看备份\n'
    ui_printf muted ' 0 退出\n'; ui_printf prompt '请选择：'
   fi
@@ -525,37 +723,35 @@ menu() {
    0) return 0;;
    2) menu_ports || say 'Port lookup failed.' '端口查询失败。' error;;
    3|5|6)
-    if [[ $LANGUAGE == en ]]; then ui_printf prompt 'Port: '; else ui_printf prompt '端口：'; fi
+    menu_ports || true
+    if [[ $LANGUAGE == en ]]; then ui_printf prompt 'TCP port (blank cancels): '; else ui_printf prompt 'TCP端口（留空取消）：'; fi
     menu_read || return 0; first=$REPLY
+    [[ -n $first ]] || continue
     case $choice in
      3) menu_change firewall-allow --port "$first" || say 'Action failed.' '操作失败。' error;;
      5) menu_change firewall-delete --port "$first" || say 'Action failed.' '操作失败。' error;;
      6) menu_change ssh-port --port "$first" || say 'Action failed.' '操作失败。' error;;
     esac;;
    4)
+    menu_ports || true
     if [[ $LANGUAGE == en ]]; then ui_printf prompt 'Current port: '; else ui_printf prompt '原端口：'; fi
     menu_read || return 0; first=$REPLY
+    [[ -n $first ]] || continue
     if [[ $LANGUAGE == en ]]; then ui_printf prompt 'New port: '; else ui_printf prompt '新端口：'; fi
     menu_read || return 0; second=$REPLY
+    [[ -n $second ]] || continue
     menu_change firewall-edit --port "$first" --to-port "$second" || say 'Action failed.' '操作失败。' error;;
-   9)
-    if ! menu_invoke status; then say 'Guard status incomplete.' '保护工具状态查询不完整。' warning; fi
-    if os systemctl is-active --quiet fail2ban; then
-     if has fail2ban-client && os fail2ban-client status server-guard-sshd >/dev/null 2>&1; then
-      say 'Fail2ban: service active; this tool jail active' 'Fail2ban：服务运行中，本工具 jail 运行中' success
-     elif [[ -f $ROOT/etc/fail2ban/jail.d/server-guard.local ]] && grep -Eq '^enabled[[:space:]]*=[[:space:]]*true$' "$ROOT/etc/fail2ban/jail.d/server-guard.local"; then
-      say 'Fail2ban: service active; this tool jail not running' 'Fail2ban：服务运行中，本工具 jail 未运行' warning
-     else
-      say 'Fail2ban: service active; this tool jail disabled' 'Fail2ban：服务运行中，本工具 jail 未启用' warning
-     fi
-    else say 'Fail2ban: service inactive' 'Fail2ban：服务未运行' warning; fi;;
+   9) menu_invoke status || say 'Guard status incomplete.' '保护工具状态查询不完整。' warning;;
    1) menu_change firewall-setup || say 'Action failed.' '操作失败。' error;;
    7) menu_change fail2ban-enable || say 'Action failed.' '操作失败。' error;;
    8) menu_change fail2ban-disable || say 'Action failed.' '操作失败。' error;;
    16) menu_invoke rules || say 'Rule lookup failed.' '规则查询失败。' error;;
    17) menu_fail2ban_policy || say 'Action failed.' '操作失败。' error;;
    18) menu_invoke backups || say 'Backup lookup failed.' '备份查询失败。' error;;
-   10) menu_change firewall-disable --scope all || say 'Action failed.' '操作失败。' error;;
+   10) menu_change firewall-disable || say 'Action failed.' '操作失败。' error;;
+   19) menu_change firewall-start || say 'Action failed.' '操作失败。' error;;
+   20) menu_change firewall-restart || say 'Action failed.' '操作失败。' error;;
+   21) menu_fail2ban;;
    11) menu_change firewall-clear || say 'Action failed.' '操作失败。' error;;
    12) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。' error;;
    13|14|15) say 'Restore, confirmation and rollback menus were removed. Changes take effect immediately.' '恢复、确认和回退菜单已取消，成功执行后直接生效。' warning;;
@@ -580,9 +776,16 @@ if [[ $MODE == menu ]]; then
  menu; exit
 fi
 if [[ $MODE == status ]]; then
+ [[ -z $ACTION$PORT$TO_PORT$TARGET_IP$BACKEND_REQUEST && $APPLY == 0 && $DRY == 0 && $SCOPE == owned ]] || die 'status is read-only'
  secure_paths
- say 'Changes take effect immediately; no confirmation or automatic rollback.' '操作成功后直接生效，无需二次确认，不自动回退。' success
+ protection_status
  if legacy_recovery_present; then say 'Legacy recovery jobs will be retired on menu entry or the next apply.' '进入菜单或下次执行变更时将停用旧回退任务。' warning; fi
+ exit
+fi
+if [[ $MODE == fail2ban-status || $MODE == fail2ban-logs ]]; then
+ [[ -z $ACTION$PORT$TO_PORT$TARGET_IP$BACKEND_REQUEST && $APPLY == 0 && $DRY == 0 && $SCOPE == owned ]] || die 'Fail2ban queries are read-only / Fail2ban查询仅接受只读参数'
+ secure_paths
+ if [[ $MODE == fail2ban-status ]]; then fail2ban_status; else fail2ban_logs; fi
  exit
 fi
 if [[ $MODE == rules || $MODE == backups ]]; then
@@ -612,11 +815,38 @@ fi
 [[ -n $ACTION ]] || die 'an action is required'
 preflight
 if [[ $MODE == plan || $DRY == 1 ]]; then
- ui_printf section 'backend=%s action=%s port=%s to_port=%s scope=%s protected_ports=%s\n' "$BACKEND" "$ACTION" "$PORT" "$TO_PORT" "$SCOPE" "${PROTECTED_PORTS[*]}"
- if [[ $ACTION == fail2ban-enable ]]; then
-  ui_printf info 'fail2ban maxretry=%s findtime=%s bantime=%s\n' "${F2B_MAXRETRY:-inherit}" "${F2B_FINDTIME:-inherit}" "${F2B_BANTIME:-inherit}"
-  say 'findtime/bantime are seconds. Unspecified limits keep this jail values or system defaults.' 'findtime/bantime单位为秒；inherit沿用本工具已有值或系统默认值。'
+ if [[ $LANGUAGE == en ]]; then
+  ui_printf section 'backend=%s action=%s port=%s to_port=%s scope=%s protected_ports=%s\n' "$BACKEND" "$ACTION" "$PORT" "$TO_PORT" "$SCOPE" "${PROTECTED_PORTS[*]}"
+ else
+  case $ACTION in
+   firewall-start) description='启动防火墙';; firewall-restart) description='重启/重载防火墙';; firewall-disable) description='关闭防火墙（保留规则）';;
+   firewall-allow) description='添加TCP放行端口';; firewall-edit) description='修改本工具TCP端口';; firewall-delete) description='删除本工具TCP端口';;
+   firewall-clear) description='清空本工具端口'; [[ $SCOPE != all ]] || description='清空全部受支持防火墙规则';;
+   ssh-port) description='修改SSH端口并同步防护';; fail2ban-enable) description='安装/启用SSH防爆破';; fail2ban-disable) description='停用本工具SSH防爆破';;
+   fail2ban-restart) description='重启Fail2ban服务';; fail2ban-unban) description='解封指定IP';; fail2ban-whitelist) description='添加防护白名单';;
+  esac
+  ui_printf section '操作预览：%s\n' "$description"
+  [[ $BACKEND == none ]] || ui_printf info '防火墙：%s\n' "$BACKEND"
+  [[ -z $PORT ]] || ui_printf info 'TCP端口：%s\n' "$PORT"
+  [[ -z $TO_PORT ]] || ui_printf info '新TCP端口：%s\n' "$TO_PORT"
+  ui_printf info '保留的SSH保护端口：%s\n' "${PROTECTED_PORTS[*]}"
  fi
+ if [[ $ACTION == fail2ban-enable ]]; then
+  retries=${F2B_MAXRETRY:-$(fail2ban_value maxretry)}
+  window=${F2B_FINDTIME:-$(fail2ban_value findtime)}
+  duration=${F2B_BANTIME:-$(fail2ban_value bantime)}
+  ui_printf info 'fail2ban maxretry=%s findtime=%s bantime=%s\n' "${retries:-5}" "${window:-600}" "${duration:-3600}"
+  say 'Times are seconds. Existing limits are retained; first use defaults to 5 retries / 600s / 3600s.' '时间单位为秒。沿用已有参数；首次启用默认5次失败、600秒窗口、3600秒封禁。'
+ fi
+ case $ACTION in
+  firewall-start|firewall-restart) say 'Prepare SSH allowances, then load saved rules. Restart reloads UFW/firewalld without stopping first.' '先准备SSH放行，再加载已保存规则；UFW/firewalld重启采用重载，避免先停后起。';;
+  firewall-disable) say 'Stop filtering and disable autostart; keep saved rules for the next start.' '关闭过滤并禁用开机启动，保留已保存规则，供下次启动使用。' warning;;
+  ssh-port) say "Allow TCP $PORT, validate and reload SSH, check its listener, then synchronize the tool Fail2ban jail. Old SSH ports stay open." "自动放行TCP $PORT → 校验并重载SSH → 核对新端口监听 → 同步本工具Fail2ban防护；保留原SSH端口。"; say 'Allow the new TCP port in your cloud security group.' '请在云安全组放行新TCP端口。' warning
+   [[ -z $SSH_SOCKET ]] || say "Disable $SSH_SOCKET and enable $SSH_SERVICE with KillMode=process to retain session processes." "同时停用 $SSH_SOCKET，改由 $SSH_SERVICE 监听；已核对KillMode=process以保留当前会话进程。" warning;;
+  fail2ban-restart) say 'Restart the Fail2ban service, affecting all its jails.' '重启整个Fail2ban服务，会涉及其中全部jail。' warning;;
+  fail2ban-unban) say "Unban $TARGET_IP from the tool SSH jail." "从本工具SSH防护中解封：$TARGET_IP。";;
+  fail2ban-whitelist) say "Persist whitelist address $TARGET_IP and unban it from the tool SSH jail." "将 $TARGET_IP 加入本工具持久白名单，并解除本工具对它的封禁。";;
+ esac
  say 'Plan only; no files, services or firewall rules changed.' '仅预览；未修改文件、服务或防火墙规则。'; exit
 fi
 [[ $APPLY == 1 ]] || die 'mutation requires explicit --apply / 实际变更需显式--apply'

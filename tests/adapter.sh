@@ -45,6 +45,10 @@ service_change() {
     if [[ $operation == start ]] && grep -qx 'ENABLED=yes' "$R/etc/ufw/ufw.conf"; then echo 1 > "$F/ufw-active"; else echo 0 > "$F/ufw-active"; fi
    fi;;
  esac
+ if [[ $name == nftables ]]; then
+  if [[ $operation == start ]]; then cp "$R/etc/nftables.conf" "$F/nft"
+  elif [[ $operation == stop ]]; then : > "$F/nft"; fi
+ fi
 }
 case $cmd in
  tar)
@@ -70,11 +74,19 @@ case $cmd in
    'is-system-running') [[ ! -f $F/systemd ]] || exit 1; echo running;;
    'is-active --quiet ssh.socket'|'is-enabled --quiet ssh.socket') [[ -f $F/socket ]] || exit 3;;
    'is-active --quiet sshd.socket'|'is-enabled --quiet sshd.socket') exit 3;;
+   'is-enabled --quiet ssh'|'is-enabled --quiet sshd') :;;
+   'show -p KillMode --value ssh.service') if [[ -f $F/ssh-kill-group ]]; then echo control-group; else echo process; fi;;
+   'show -p SendSIGHUP --value ssh.service') if [[ -f $F/ssh-send-hup ]]; then echo yes; else echo no; fi;;
+   'is-enabled ssh.service') if [[ -f $F/ssh-service-masked ]]; then echo masked; exit 1; else echo enabled; fi;;
    'is-active --quiet firewalld'|'is-active --quiet ufw'|'is-active --quiet nftables'|'is-active --quiet netfilter-persistent'|'is-active --quiet iptables'|'is-active --quiet ip6tables')
     s=${*: -1}; [[ $(cat "$F/services/$s.active") == 1 || ($s == firewalld && -f $F/conflict) ]] || exit 3;;
    'is-active --quiet ssh'|'is-active --quiet sshd') :;;
    'is-active --quiet fail2ban') [[ $(cat "$F/services/fail2ban.active") == 1 ]] || exit 3;;
    'is-enabled --quiet fail2ban'|'is-enabled --quiet nftables'|'is-enabled --quiet netfilter-persistent'|'is-enabled --quiet iptables'|'is-enabled --quiet ip6tables'|'is-enabled --quiet ufw'|'is-enabled --quiet firewalld') s=${*: -1}; [[ $(cat "$F/services/$s.enabled") == 1 ]] || exit 1;;
+   'is-enabled nftables'|'is-enabled netfilter-persistent'|'is-enabled iptables'|'is-enabled ip6tables'|'is-enabled ufw'|'is-enabled firewalld')
+    s=$2
+    if [[ -f $F/firewall-masked ]]; then echo masked; exit 1; fi
+    if [[ $(cat "$F/services/$s.enabled") == 1 ]]; then echo enabled; else echo disabled; exit 1; fi;;
    'daemon-reload') :;;
    'disable --now server-guard-rollback.timer'|'disable --now server-guard-boot.service')
     [[ ! -f $F/legacy-disable-fail ]] || exit 1
@@ -85,9 +97,14 @@ case $cmd in
     printf 'LEGACY %s\n' "$*" >> "$F/log";;
    'cat netfilter-persistent') [[ ! -f $F/missing-netfilter-persistent ]] || exit 1; echo '[Service]';;
    'cat nftables'|'cat iptables ip6tables') echo '[Service]';;
-   'reload ssh'|'reload sshd'|'reload-or-restart fail2ban')
+   'disable --now ssh.socket') mutation "$@"; rm -f "$F/socket";;
+   'enable ssh.service') mutation "$@";;
+   'reload ssh'|'reload sshd'|'restart ssh.service'|'reload-or-restart fail2ban'|'restart fail2ban')
     mutation "$@"
-    if [[ $* == 'reload-or-restart fail2ban' ]]; then echo 1 > "$F/services/fail2ban.active"; fi
+    if [[ $* == *fail2ban ]]; then echo 1 > "$F/services/fail2ban.active"
+    else
+     awk '$1=="Port" {printf "LISTEN 0 128 [::]:%s [::]:* users:((\"sshd\",pid=50,fd=3))\n",$2}' "$R/etc/ssh/sshd_config" > "$F/ssh-listeners"
+    fi
     if [[ -f $F/ssh-reload-fail ]]; then exit 1; fi
     if [[ -f $F/se-base ]]; then
      expected_context=system_u:object_r:sshd_config_t:s0
@@ -109,7 +126,10 @@ case $cmd in
  ss)
   [[ ! -f $F/ss ]] || exit 1
   case "$*" in
-   '-H -ltnp') printf 'LISTEN 0 128 [::]:2022 [::]:* users:(("sshd",pid=50,fd=3))\n';;
+   '-H -ltnp')
+    printf 'LISTEN 0 128 [::]:2022 [::]:* users:(("sshd",pid=50,fd=3))\n'
+    if [[ -f $F/ssh-listeners && ! -f $F/ssh-listener-missing ]]; then cat "$F/ssh-listeners"; fi
+    if [[ -f $F/port-occupied ]]; then printf 'LISTEN 0 128 [::]:2299 [::]:* users:(("nginx",pid=51,fd=4))\n'; fi;;
    '-H -tn state established') read -r cip cp sip sp <<< "${SSH_CONNECTION:?}"; printf '0 0 [%s]:%s [%s]:%s\n' "$sip" "$sp" "$cip" "$cp";;
    *) bad "$@";;
   esac;;
@@ -148,9 +168,10 @@ case $cmd in
   if [[ $cmd == ip6tables-restore && -f $F/mutate-fail ]]; then rm "$F/mutate-fail"; exit 1; fi;;
  nft)
   case "$*" in
-   'list tables') if [[ $backend == nftables ]]; then echo 'table inet filter'; elif [[ $backend == firewalld && $(cat "$F/services/firewalld.active") == 1 ]]; then echo 'table inet firewalld'; fi; [[ ! -f $F/foreign-nft ]] || echo 'table inet f2b-table';;
+   'list tables') if [[ $backend == nftables && -s $F/nft ]]; then echo 'table inet filter'; elif [[ $backend == firewalld && $(cat "$F/services/firewalld.active") == 1 ]]; then echo 'table inet firewalld'; fi; [[ ! -f $F/foreign-nft ]] || echo 'table inet f2b-table'; [[ ! -f $F/unknown-nft ]] || echo 'table inet unknown';;
    'list ruleset') cat "$F/nft";;
-   '-f '*) [[ $# == 2 ]] || bad "$@"; mutation "$@"; [[ ! -f $F/restore-fail ]] || exit 1; sed '/^flush ruleset$/d' "$2" > "$F/nft";;
+   'list table inet filter') [[ $backend == nftables && -s $F/nft ]] || exit 1; cat "$F/nft";;
+   '-f '*) [[ $# == 2 ]] || bad "$@"; mutation "$@"; [[ ! -f $F/restore-fail ]] || exit 1; ! grep -qx 'flush ruleset' "$2" || bad 'global nft flush refused'; sed '/^delete table inet filter$/d' "$2" > "$F/nft";;
    *) bad "$@";;
   esac;;
  ufw)
@@ -185,6 +206,7 @@ case $cmd in
     opt=$2; ports=$F/fw-ports; [[ $perm == 0 ]] || ports=$R/etc/firewalld/fixture-ports
     case $opt in
      --list-ports) cat "$ports";;
+     --query-port=*) value=${opt#*=}; [[ " $(cat "$ports") " == *" $value "* ]] || exit 1;;
      --list-services) cat "$F/fw-services";;
      --list-interfaces) echo eth0;;
      --list-sources|--list-rich-rules|--list-forward-ports|--list-source-ports|--list-protocols|--list-icmp-blocks) :;;
@@ -210,14 +232,26 @@ case $cmd in
     mutation "$@"; value=${2#*=}; ports=$R/etc/firewalld/fixture-ports
     if [[ " $(cat "$ports") " != *" $value "* ]]; then printf '%s %s\n' "$(cat "$ports")" "$value" > "$ports"; fi
     if [[ -f $F/offline-add-fail ]]; then rm "$F/offline-add-fail"; exit 1; fi;;
+   '--get-zones') echo public;;
+   '--get-policies'|'--direct --get-all-rules'|'--direct --get-all-passthroughs') :;;
+   '--zone=public --list-all') printf 'public\n  target: %s\n' "$(cat "$R/etc/firewalld/fixture-target")";;
+   '--zone=public --get-target') cat "$R/etc/firewalld/fixture-target";;
+   '--zone=public --list-ports') cat "$R/etc/firewalld/fixture-ports";;
+   '--zone=public --list-services') cat "$F/fw-services";;
+   '--zone=public --list-interfaces') echo eth0;;
+   '--zone=public --list-sources'|'--zone=public --list-rich-rules'|'--zone=public --list-forward-ports'|'--zone=public --list-source-ports'|'--zone=public --list-protocols'|'--zone=public --list-icmp-blocks') :;;
+   '--zone=public --query-masquerade'|'--zone=public --query-icmp-block-inversion'|'--zone=public --query-forward') exit 1;;
    *) bad "$@";;
   esac;;
  fail2ban-client)
   case "$*" in
    -t) [[ ! -f $F/fail2ban-t ]] || exit 1;;
-   'status server-guard-sshd') [[ ! -f $F/fail2ban-jail-fail && $(cat "$F/services/fail2ban.active") == 1 && -f $R/etc/fail2ban/jail.d/server-guard.local ]] && grep -Eq '^enabled[[:space:]]*=[[:space:]]*true$' "$R/etc/fail2ban/jail.d/server-guard.local" || exit 1;;
+   'status server-guard-sshd') [[ ! -f $F/fail2ban-jail-fail && $(cat "$F/services/fail2ban.active") == 1 && -f $R/etc/fail2ban/jail.d/server-guard.local ]] && grep -Eq '^enabled[[:space:]]*=[[:space:]]*true$' "$R/etc/fail2ban/jail.d/server-guard.local" || exit 1; printf 'Status for the jail: server-guard-sshd\n  Currently banned: 1\n  Banned IP list: 198.51.100.7\n';;
+   'reload'|'reload server-guard-sshd') mutation "$@"; [[ ! -f $F/fail2ban-reload-fail ]] || exit 1;;
+   'set server-guard-sshd unbanip '*) [[ $# == 4 ]] || bad "$@"; mutation "$@";;
    *) bad "$@";;
   esac;;
  command-exists) [[ $# == 1 ]] || bad "$@"; [[ ! -f $F/missing-$1 ]] || exit 1;;
+ journalctl) [[ $* == '-u fail2ban --no-pager -n 80' ]] || bad "$@"; printf 'sshd Ban 198.51.100.7\nsshd Unban 198.51.100.7\n';;
  *) bad "$@";;
 esac

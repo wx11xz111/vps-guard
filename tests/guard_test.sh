@@ -60,8 +60,8 @@ no_recovery() {
 runtime_file() { case $1 in nftables) echo "$GUARD_TEST_ROOT/fixture/nft";; firewalld) echo "$GUARD_TEST_ROOT/fixture/fw-ports";; *) echo "$GUARD_TEST_ROOT/fixture/v4";; esac; }
 persistent_file() { case $1 in nftables) echo "$GUARD_TEST_ROOT/etc/nftables.conf";; ufw) echo "$GUARD_TEST_ROOT/etc/ufw/before.rules";; firewalld) echo "$GUARD_TEST_ROOT/etc/firewalld/fixture-ports";; *) echo "$GUARD_TEST_ROOT/etc/iptables/rules.v4";; esac; }
 focus=${GUARD_TEST_FOCUS:-all}
-case $focus in all|operations|ports|menu|features|fail2ban|setup|selinux) :;; *) echo "Unknown focus: $focus"; exit 1;; esac
-for group in operations ports menu features fail2ban setup selinux; do
+case $focus in all|operations|ports|menu|features|fail2ban|setup|selinux|workflow) :;; *) echo "Unknown focus: $focus"; exit 1;; esac
+for group in operations ports menu features fail2ban setup selinux workflow; do
  [[ $focus == all || $focus == "$group" ]] || continue
  export GUARD_TEST_ADAPTER=$HERE/adapter.sh
  source "$HERE/${group}_test.sh"

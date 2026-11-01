@@ -10,7 +10,7 @@ printf '2\n0\n' | run menu > "$work/menu-ufw"
 grep -q '防火墙后端：ufw' "$work/menu-ufw"
 ! grep -q '端口查询失败' "$work/menu-ufw"
 run plan firewall-allow --port 8443 > "$work/plan"
-grep -q '^backend=ufw ' "$work/plan"
+grep -q '^防火墙：ufw' "$work/plan"
 ! grep -q 'systemctl <cat> <netfilter-persistent>' "$GUARD_TEST_ROOT/fixture/log"
 ! grep -q '^MUTATE' "$GUARD_TEST_ROOT/fixture/log"
 [[ ! -e $GUARD_TEST_ROOT/var/lib/server-guard ]]

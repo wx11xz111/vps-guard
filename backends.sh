@@ -5,7 +5,7 @@ setup_empty_rules() {
  if has nft; then
   text=$(os nft list tables) || die 'Cannot inspect nftables / 无法检查nft规则'
   if [[ -n $text ]]; then
-   [[ -z $(sed '/^table ip filter$/d;/^table ip6 filter$/d' <<< "$text") ]] || die 'Existing nft tables; use the current manager / 已有nft规则，请使用现有管理器'
+   [[ -z $(sed '/^table ip filter$/d;/^table ip6 filter$/d;/^table inet f2b-table$/d' <<< "$text") ]] || die 'Existing nft tables; use the current manager / 已有nft规则，请使用现有管理器'
    has iptables-save && has ip6tables-save || die 'Cannot inspect existing filter tables'
   fi
  fi
@@ -24,7 +24,7 @@ setup_firewall() (
  for s in ufw firewalld nftables netfilter-persistent iptables ip6tables; do
   if os systemctl is-active --quiet "$s"; then
    [[ $s == "$service" ]] || die "Firewall manager $s already active / 已有其他防火墙运行"
-   active=1
+   if [[ $s != ufw || $(os ufw status) == 'Status: active'* ]]; then active=1; fi
   fi
  done
  if ((active)); then
@@ -119,6 +119,7 @@ setup_firewall() (
  fi
  [[ $status == enabled ]] || enable_changed=1
  os systemctl enable "$service"
+ printf '%s\n' "$service" > "$STATE/firewall.backend"
  success=1
  say "Firewall enabled: $service. Open a new SSH connection to verify access." "防火墙已启用：$service。请新建 SSH 连接验证访问。" success
 )
@@ -136,6 +137,15 @@ detect_backend() {
  ((${#active[@]} <= 1)) || die 'conflicting firewall managers / 多个防火墙管理器冲突'
  BACKEND=${BACKEND_REQUEST:-${active[0]:-}}
  if [[ -n $BACKEND_REQUEST && ${#active[@]} != 0 && $BACKEND_REQUEST != "${active[0]}" ]]; then die 'requested backend conflicts with active manager'; fi
+ if [[ -z $BACKEND ]]; then
+  # Retain the manager identity after stopping its service. Never interpret
+  # an inactive UFW installation as unmanaged iptables rules.
+  local remembered=''
+  if [[ -f $STATE/firewall.backend ]]; then remembered=$(cat "$STATE/firewall.backend"); fi
+  case $remembered in ufw|firewalld|nftables|iptables) BACKEND=$remembered;; esac
+  if [[ -z $BACKEND ]] && has ufw && [[ -f $ROOT/etc/ufw/ufw.conf ]]; then BACKEND=ufw; fi
+  if [[ -z $BACKEND ]] && has firewall-cmd && [[ -f $ROOT/etc/firewalld/firewalld.conf ]]; then BACKEND=firewalld; fi
+ fi
  if [[ -z $BACKEND ]]; then
   local nt='' ip=''
   if has nft; then nt=$(os nft list tables) || die 'cannot inspect nftables'; fi
@@ -196,7 +206,9 @@ iptables_shape() {
 nft_shape() {
  # Only one inet table and one input base chain; any additional base-chain
  # accept/drop interactions, raw hooks, maps, includes or output filtering fail.
- [[ $(os nft list tables) == 'table inet filter' ]] || die 'nftables requires sole inet filter table; extra base-chain paths refused'
+ local tables
+ tables=$(os nft list tables) || die 'Cannot inspect nftables tables'
+ [[ -z $(sed '/^table inet filter$/d;/^table inet f2b-table$/d' <<< "$tables") ]] || die 'nftables requires inet filter and optional Fail2ban table; extra base-chain paths refused'
  awk '
   /^[[:space:]]*table / {if ($0 !~ /^table inet filter \{$/) bad=1; next}
   /^[[:space:]]*chain / {chain=$2; if(chain!="input" && chain!="forward" && chain!="output") bad=1; next}
@@ -204,10 +216,18 @@ nft_shape() {
   /^[[:space:]]*}/ || /^[[:space:]]*$/ {next}
   chain=="output" && $0 !~ /comment "server-guard"/ {bad=1}
   /flowtable |set |map |include |hook |jump |goto / {bad=1}
+  /^[[:space:]]*(flush|delete|add|insert|replace|destroy)[[:space:]]/ {bad=1}
   END {exit (bad || input!=1)}
  ' <<< "$NFT_TEXT" || die 'unsupported nftables rule shape; no changes'
 }
-fw_query() { os firewall-cmd "$@"; }
+fw_query() {
+ if [[ ${FW_OFFLINE:-0} == 1 ]]; then
+  local -a args=("$@")
+  [[ ${args[0]:-} != --permanent ]] || args=("${args[@]:1}")
+  case ${args[0]:-} in --state|--get-active-zones) return 0;; --get-active-policies) args=(--get-policies);; esac
+  os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" "${args[@]}"
+ else os firewall-cmd "$@"; fi
+}
 fw_target() {
  local layer=$1 kind=$2 name=$3 output
  if [[ $layer == permanent ]]; then fw_query --permanent "--$kind=$name" --get-target
@@ -254,11 +274,32 @@ fw_simple() {
   done
  done
 }
+firewall_service_preflight() {
+ local service status tables
+ case $BACKEND in
+  ufw|firewalld|nftables) service=$BACKEND;;
+  iptables) [[ $FAMILY == debian ]] && service=netfilter-persistent || service='iptables ip6tables';;
+ esac
+ if [[ $ACTION != firewall-disable ]]; then
+  for service in $service; do
+   status=$(os systemctl is-enabled "$service" 2>/dev/null || true)
+   [[ $status != masked* ]] || die 'Firewall service was masked by administrator / 防火墙已被管理员屏蔽，请先检查'
+  done
+ fi
+ if [[ $BACKEND == nftables && $ACTION == firewall-disable ]]; then
+  tables=$(os nft list tables) || die 'Cannot inspect nftables tables'
+  ! grep -qx 'table inet f2b-table' <<< "$tables" || die 'Stopping nftables may flush Fail2ban rules; use UFW/firewalld lifecycle management / nftables停止服务可能清除Fail2ban规则，当前拒绝执行'
+ fi
+}
 backend_preflight() {
+ FW_OFFLINE=0
+ case $ACTION in firewall-start|firewall-restart|firewall-disable) firewall_service_preflight;; esac
  case $BACKEND in
   nftables)
    need nft nftables nftables
-   NFT_TEXT=$(os nft list ruleset) || die 'nft snapshot failed'; nft_shape
+   NFT_TEXT=$(os nft list table inet filter 2>/dev/null || true)
+   if [[ -n $NFT_TEXT ]]; then nft_shape
+   elif [[ $ACTION != firewall-start && $ACTION != firewall-restart && $ACTION != firewall-disable ]]; then die 'nft filter table missing'; fi
    if [[ -f $ROOT/etc/nftables.conf ]]; then
     local runtime_nft=$NFT_TEXT; NFT_TEXT=$(cat "$ROOT/etc/nftables.conf"); nft_shape; NFT_TEXT=$runtime_nft
    fi
@@ -268,7 +309,8 @@ backend_preflight() {
    need iptables-save iptables iptables; need ip6tables-save iptables iptables
    need iptables-restore iptables iptables; need ip6tables-restore iptables iptables
    IPT4=$(os iptables-save) || die 'IPv4 snapshot failed'; IPT6=$(os ip6tables-save) || die 'IPv6 snapshot failed'
-   iptables_shape "$IPT4"; iptables_shape "$IPT6"
+   if [[ -n $IPT4$IPT6 ]]; then iptables_shape "$IPT4"; iptables_shape "$IPT6"
+   else case $ACTION in firewall-start|firewall-restart|firewall-disable) :;; *) die 'incomplete filter ruleset';; esac; fi
    if [[ $BACKEND == iptables ]]; then
     local persist
     for persist in etc/iptables/rules.v4 etc/iptables/rules.v6 etc/sysconfig/iptables etc/sysconfig/ip6tables; do
@@ -278,12 +320,14 @@ backend_preflight() {
    # nft-backed iptables tables are expected. Other families/tables are not.
    if has nft; then
     local tables; tables=$(os nft list tables) || die 'cannot inspect competing nft rules'
-    [[ -z $(sed '/^table ip filter$/d;/^table ip6 filter$/d' <<< "$tables") ]] || die 'foreign nftables tables conflict with iptables/UFW'
+    [[ -z $(sed '/^table ip filter$/d;/^table ip6 filter$/d;/^table inet f2b-table$/d' <<< "$tables") ]] || die 'foreign nftables tables conflict with iptables/UFW'
    fi
    if [[ $BACKEND == ufw ]]; then
     need ufw ufw ufw
     local ufw_status; ufw_status=$(os ufw status) || die 'cannot query UFW status'
-    [[ $ufw_status == 'Status: active'* ]] || die 'UFW is inactive; enable it before changing ports / UFW未启用，请先启用再修改端口'
+    if [[ $ufw_status != 'Status: active'* ]]; then
+     case $ACTION in firewall-start|firewall-restart|firewall-disable) [[ $ufw_status == 'Status: inactive' ]] || die 'Unknown UFW state';; *) die 'UFW is inactive; choose 19 to start it / UFW未启用，请选19启动后再修改端口';; esac
+    fi
     [[ -f $ROOT/etc/ufw/before.rules && -f $ROOT/etc/ufw/before6.rules ]] || die 'UFW persistent rule files missing'
     ufw_persistent_preflight "$ROOT"
     ufw_early_paths "$IPT4"; ufw_early_paths "$IPT6"
@@ -291,6 +335,9 @@ backend_preflight() {
    else os systemctl cat iptables ip6tables >/dev/null || die 'install iptables-services explicitly for persistence'; fi;;
   firewalld)
    need firewall-cmd firewalld firewalld
+   if ! os systemctl is-active --quiet firewalld; then
+    case $ACTION in firewall-start|firewall-restart|firewall-disable) FW_OFFLINE=1; need firewall-offline-cmd firewalld firewalld;; esac
+   fi
    fw_query --state >/dev/null || die 'firewalld is inactive / firewalld未运行'
    FW_ZONES=$(fw_query --get-zones) || die 'cannot list firewalld zones'
    [[ -n $FW_ZONES ]] || die 'no firewalld zones'
@@ -298,7 +345,8 @@ backend_preflight() {
    local tables cleanup
    need nft nftables nftables
    tables=$(os nft list tables) || die 'cannot inspect firewalld nft paths'
-   [[ $tables == 'table inet firewalld' ]] || die 'firewalld requires sole native nftables table; foreign tables refused'
+   [[ -z $(sed '/^table inet firewalld$/d;/^table inet f2b-table$/d' <<< "$tables") ]] || die 'firewalld requires native table and optional Fail2ban table; foreign tables refused'
+   if [[ $FW_OFFLINE == 0 ]]; then grep -qx 'table inet firewalld' <<< "$tables" || die 'firewalld native table missing'; fi
    cleanup=$(sed -n 's/^CleanupOnExit=//p' "$ROOT/etc/firewalld/firewalld.conf" 2>/dev/null || true)
    [[ -z $cleanup || $cleanup == yes ]] || die 'firewalld CleanupOnExit=no prevents safe disable'
    fw_simple;;
@@ -417,12 +465,13 @@ nft_build() {
  ' "$output.base" > "$output"
 }
 backend_change() {
+ case $ACTION in firewall-start|firewall-restart|firewall-disable) firewall_service_change; return;; esac
  local mode=owned source_tx=$TX zone p prop value
  [[ $SCOPE != all || ($ACTION != firewall-clear && $ACTION != firewall-disable) ]] || mode=all
  case $BACKEND in
   nftables)
    nft_build "$source_tx/nft.runtime" "$TX/nft.new" "$mode"
-   { echo 'flush ruleset'; cat "$TX/nft.new"; } > "$TX/nft.apply"
+   { echo 'delete table inet filter'; cat "$TX/nft.new"; } > "$TX/nft.apply"
    os nft -f "$TX/nft.apply"
    local persistent_nft=$ROOT/etc/nftables.conf
    [[ -f $persistent_nft ]] || persistent_nft=$source_tx/nft.runtime
@@ -512,6 +561,82 @@ backend_change() {
     done
    fi;;
  esac
+}
+firewall_service_change() {
+ local service zone p family source runtime owned_zone owned_port
+ if [[ $ACTION == firewall-disable ]]; then
+  say 'Stopping the firewall; saved port rules are retained.' '正在关闭防火墙，保留已保存的端口规则。' warning
+  case $BACKEND in
+   ufw) os ufw --force disable; os systemctl stop ufw; os systemctl disable ufw;;
+   firewalld) os systemctl stop firewalld; os systemctl disable firewalld;;
+   nftables) os systemctl stop nftables; os systemctl disable nftables;;
+   iptables)
+    if [[ $FAMILY == debian ]]; then os systemctl stop netfilter-persistent; os systemctl disable netfilter-persistent
+    else for service in iptables ip6tables; do os systemctl stop "$service"; os systemctl disable "$service"; done; fi
+    printf '*filter\n:INPUT ACCEPT [0:0]\n:FORWARD ACCEPT [0:0]\n:OUTPUT ACCEPT [0:0]\nCOMMIT\n' > "$TX/iptables.stopped"
+    os iptables-restore < "$TX/iptables.stopped"; os ip6tables-restore < "$TX/iptables.stopped";;
+  esac
+ else
+  say "Preparing SSH protection before loading $BACKEND rules." "正在准备SSH放行，再加载 $BACKEND 规则。"
+  case $BACKEND in
+   ufw)
+    ufw_build "$ROOT/etc/ufw/before.rules" "$TX/ufw4.new"
+    ufw_build "$ROOT/etc/ufw/before6.rules" "$TX/ufw6.new"
+    cat "$TX/ufw4.new" > "$ROOT/etc/ufw/before.rules"
+    cat "$TX/ufw6.new" > "$ROOT/etc/ufw/before6.rules"
+    if [[ $ACTION == firewall-restart && $(os ufw status) == 'Status: active'* ]]; then os ufw reload; else os ufw --force enable; fi
+    os systemctl enable ufw
+    os systemctl start ufw
+    [[ $(os ufw status) == 'Status: active'* ]] || die 'UFW did not activate / UFW未成功启用';;
+   firewalld)
+    if [[ $FW_OFFLINE == 1 ]]; then
+     # Offline writes prepare every zone before a stopped daemon can filter.
+     for zone in $FW_ZONES; do
+      for p in "${PORTS[@]}"; do
+       source=$(fw_query --zone="$zone" --list-ports)
+       if [[ " $source " != *" $p/tcp "* ]]; then
+        fw_query --zone="$zone" --add-port="$p/tcp" >/dev/null
+        printf 'permanent %s %s\nruntime %s %s\n' "$zone" "$p" "$zone" "$p" >> "$STATE/firewalld.owned"
+       fi
+      done
+     done
+     os firewall-offline-cmd --system-config "$ROOT/etc/firewalld" --check-config
+     os systemctl start firewalld
+     FW_OFFLINE=0
+    else
+     (local ACTION=firewall-protect; backend_change)
+     [[ $ACTION != firewall-restart ]] || fw_query --reload
+    fi
+    os systemctl enable firewalld
+    fw_query --state >/dev/null
+    for zone in $FW_ZONES; do for p in "${PORTS[@]}"; do fw_query --zone="$zone" --query-port="$p/tcp" >/dev/null || die 'SSH firewall rule missing after activation / 启动后SSH规则核对失败'; done; done;;
+   iptables)
+    for family in 4 6; do
+     if [[ $FAMILY == debian ]]; then source=$ROOT/etc/iptables/rules.v$family
+     elif [[ $family == 4 ]]; then source=$ROOT/etc/sysconfig/iptables; else source=$ROOT/etc/sysconfig/ip6tables; fi
+     if [[ ! -f $source ]]; then source=$TX/ipv$family.runtime; fi
+     [[ -s $source ]] || die 'Saved firewall rules missing; install/enable the firewall first / 缺少已保存规则，请先安装并启用防火墙'
+     iptables_build "$source" "$TX/start$family.new" owned
+     if [[ $FAMILY == debian ]]; then source=$ROOT/etc/iptables/rules.v$family
+     elif [[ $family == 4 ]]; then source=$ROOT/etc/sysconfig/iptables; else source=$ROOT/etc/sysconfig/ip6tables; fi
+     mkdir -p "${source%/*}"; cp "$TX/start$family.new" "$source"
+    done
+    os iptables-restore < "$TX/start4.new"; os ip6tables-restore < "$TX/start6.new"
+    if [[ $FAMILY == debian ]]; then os systemctl enable netfilter-persistent; os systemctl start netfilter-persistent
+    else for service in iptables ip6tables; do os systemctl enable "$service"; os systemctl start "$service"; done; fi;;
+   nftables)
+    source=$ROOT/etc/nftables.conf
+    [[ -f $source ]] || source=$TX/nft.runtime
+    [[ -s $source ]] || die 'Saved nftables rules missing / 缺少已保存nftables规则'
+    nft_build "$source" "$TX/nft.start" owned
+    cp "$TX/nft.start" "$ROOT/etc/nftables.conf"
+    os systemctl start nftables
+    { if os nft list table inet filter >/dev/null 2>&1; then echo 'delete table inet filter'; fi; cat "$TX/nft.start"; } > "$TX/nft.apply"
+    os nft -f "$TX/nft.apply"
+    os systemctl enable nftables;;
+  esac
+ fi
+ printf '%s\n' "$BACKEND" > "$STATE/firewall.backend"
 }
 protected_port() { local p; for p in "${PROTECTED_PORTS[@]}"; do [[ $p != "$1" ]] || return 0; done; return 1; }
 fw_port_unowned_or_inconsistent() {

@@ -24,11 +24,13 @@ vps-guard
 | 6 | 切换 SSH 端口，保留原端口 |
 | 7 / 8 | 安装并启用、停用本工具 Fail2ban jail |
 | 9 | 查看状态 |
-| 10 | 关闭防火墙 |
+| 10 | 关闭防火墙并禁用开机启动，保留已保存规则 |
 | 11 / 12 | 清空本工具端口、清空受支持的整机规则 |
 | 16 | 查看实际防火墙规则 |
 | 17 | 配置防爆破参数 |
 | 18 | 查看配置备份及执行结果 |
+| 19 / 20 | 启动防火墙、重启/重载防火墙 |
+| 21 | Fail2ban防护管理子菜单 |
 | 0 | 退出 |
 
 原编号 13/14/15 的恢复、确认和回退功能已移除，其他编号保留。操作前仍有 `[y/N]`：Y/y 执行，N/n、回车或输入结束取消；其他输入重新提示。没有执行后的确认步骤。
@@ -60,6 +62,13 @@ sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-edit --
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-delete --port 8543 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply ssh-port --port 54411 --apply
 sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply fail2ban-enable --maxretry 5 --findtime 600 --bantime 3600 --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-disable --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-start --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply firewall-restart --apply
+sudo bash ./server-guard.sh fail2ban-status
+sudo bash ./server-guard.sh fail2ban-logs
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply fail2ban-unban --ip 198.51.100.7 --apply
+sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply fail2ban-whitelist --ip 2001:db8::99 --apply
 ```
 
 plan 和 --dry-run 仅预览，不安装、不创建备份、不迁移旧任务。ports 列出 SSH 保护端口及本工具普通 TCP 端口；rules 显示实际管理器规则，包括本工具之外的规则。UFW 同时显示编号规则和 show raw；iptables 输出双栈运行快照；nftables 输出运行规则；firewalld 输出运行与永久区域。
@@ -74,7 +83,11 @@ plan 和 --dry-run 仅预览，不安装、不创建备份、不迁移旧任务�
 
 只写 `/etc/fail2ban/jail.d/server-guard.local` 中的 `[server-guard-sshd]`，使用 sshd filter/systemd backend，覆盖识别出的全部 SSH 端口，ignoreip 包含当前管理来源和环回地址，不改写其他 jail。已有其他 jail 无效时需先修复。
 
-菜单 17 回车使用 5 次失败、600 秒统计窗口、3600 秒封禁；--maxretry 范围 1–100，--findtime 为 1–604800 秒，--bantime 为 1–31536000 秒。命令未指定的值保留本工具已有设置，首次启用继承系统默认值。停用再启用不会丢失这些参数。
+菜单 17 回车保留当前值；首次使用为 5 次失败、600 秒统计窗口、3600 秒封禁。--maxretry 范围 1–100，--findtime 为 1–604800 秒，--bantime 为 1–31536000 秒。命令未指定的值保留本工具已有设置，首次启用采用 5/600/3600。停用再启用不会丢失这些参数。
+
+菜单 21 集中提供：1 状态及封禁列表、2 安装启用、3 参数、4 停用本工具 jail、5 重启整个 Fail2ban 服务、6 解封 IP、7 添加持久白名单、8 日志、0 返回。查看不要求 SSH_CONNECTION，也不自动安装。白名单仅接受单个 IPv4/IPv6 地址，保留已有白名单及当前管理来源；更新参数、停用和 SSH 端口同步也保留这些地址。启用的 jail 添加白名单时同时解封该地址。解封仅修改运行状态，不加入白名单。
+
+启用及同步仅管理 `[server-guard-sshd]`，保留同文件中的其他节及本工具未知设置，不修改其他配置文件。停用本工具 jail 不停止其他 jail。菜单 21 的服务重启会涉及全部 jail，执行前明确提示；不会卸载软件。日志同时显示最近 80 条 systemd 记录及存在时的最近 40 行 `/var/log/fail2ban.log`。
 
 启用 Fail2ban 不要求先启用 UFW/firewalld。jail 启动与实际封禁效果需要分别验证，后者取决于系统可用的 banaction 和过滤规则。包信息见 [Ubuntu](https://packages.ubuntu.com/noble/fail2ban)、[EPEL](https://packages.fedoraproject.org/pkgs/fail2ban/fail2ban-server/epel-9.html)。
 
@@ -82,14 +95,22 @@ plan 和 --dry-run 仅预览，不安装、不创建备份、不迁移旧任务�
 
 | 后端 | 持久化与支持边界 |
 | --- | --- |
-| nftables | 唯一 inet filter 表，普通优先级 input base chain；拒绝额外 hook、复杂 jump/map/set/include 或输出过滤 |
+| nftables | inet filter 表，允许独立的 inet f2b-table；普通优先级 input base chain，拒绝额外 hook、复杂 jump/map/set/include 或输出过滤 |
 | iptables | 双栈 filter 表；Debian 需要 netfilter-persistent，RHEL 需要 iptables/ip6tables services；拒绝 raw/mangle/nat/security 表及竞争管理器 |
 | UFW | 标准 before.rules/before6.rules、IPV6=yes；保护链放在 before-input/output 前方；拒绝不明确的早期拒绝或后续覆盖链 |
-| firewalld | 原生 nftables 后端及唯一 inet firewalld 表；逐区域处理；拒绝复杂 direct、policy、rich、转发/伪装及无法可靠查询的配置 |
+| firewalld | 原生 nftables 后端及 inet firewalld 表，允许独立的 inet f2b-table；逐区域处理，拒绝复杂 direct、policy、rich、转发/伪装及无法可靠查询的配置 |
 
 实际变更继续执行上述检查，--backend 不能绕过管理器冲突。不会接管 Docker/Kubernetes、额外命名空间、tc/XDP 或其他进程并发写入的规则。只读查看的限制比写操作少。
 
-SSH 保护端口取当前 SSH_CONNECTION、sshd -T、ss -ltnp 实际 sshd 监听端口和请求新端口的并集；不能识别时拒绝，环境丢失不会猜测 22。禁止修改或删除 SSH 保护端口。socket 激活 SSH 暂不支持端口切换。旧 SSH 端口保留，工具不默认关闭密码或 root 登录。
+UFW/iptables 同样允许默认名称为 `inet f2b-table` 的独立 Fail2ban 表；不会操作该表。其他未知 nft 表仍拒绝写入。nftables 更新仅替换 `inet filter`，不再全局 flush ruleset。独立 nftables 服务停止可能全局清空规则；存在独立 Fail2ban 表时，工具拒绝该停止操作，避免破坏封禁。
+
+菜单 10 关闭过滤并禁用开机启动，保存端口配置和备份；19 从已保存规则启动，先补齐全部已识别 SSH 端口；20 重新加载规则。UFW 使用 reload，firewalld 使用 firewall-cmd --reload，因此 firewalld 未保存的临时业务规则不会保留；预览会提示加载已保存规则。原清空规则语义仅保留在 11/12。工具记录最近管理器，停用后不会把 UFW 错认成裸 iptables。管理员 mask 的服务不会被自动解除。
+
+SSH 保护端口取当前 SSH_CONNECTION、sshd -T、ss -ltnp 实际 sshd 监听端口和请求新端口的并集；不能识别时拒绝，环境丢失不会猜测 22。禁止修改或删除 SSH 保护端口。旧 SSH 端口保留，工具不默认关闭密码或 root 登录。
+
+检测到 ssh.socket/sshd.socket 激活时，预检要求对应 SSH 服务未被 mask、KillMode=process 且 SendSIGHUP=no；不满足时提前拒绝。预览明确说明将切换为服务监听。在配置校验及防火墙放行之后，停用 socket 的开机启动并停止它，启用及重启对应 SSH 服务，再检查新端口监听。不会永久 mask socket，也不自动解除管理员已有 mask。会话保留依据 systemd 的进程管理设置，真实切换仍需实机验收。
+
+SSH 改端口先拒绝其他进程占用的 TCP 端口，生成并校验候选配置，再准备 SELinux 授权和防火墙放行。写入后重载 SSH，最多等待 5 秒核对新端口确实由 sshd 监听，随后更新本工具 Fail2ban 的端口列表并校验配置；服务及 jail 已启用时重新加载本工具 jail 并检查就绪。服务停止或 jail 停用时只保存新端口，不自动启用。未配置本工具 jail 时提示使用菜单 7，外部 sshd jail 仍由管理员管理。监听失败或防护同步失败都会报告失败，保留原 SSH 端口及当前结果和备份，不自动回退。
 
 菜单 1 是首次安装/启用准备入口，不创建编号备份；根据发行版安装 UFW/firewalld，先准备全部识别出的 SSH 放行，再启用并验证。已有其他管理器或不支持的过滤规则时拒绝安装。其他业务端口需单独放行，云安全组由管理员维护。
 
@@ -111,6 +132,7 @@ Linux 隔离夹具需要 root 和独立 TMPDIR，真实 Unix 权限必须有效�
 TMPDIR=/path/to/isolated-tmp bash tests/guard_test.sh
 TMPDIR=/path/to/isolated-tmp GUARD_TEST_FOCUS=operations bash tests/guard_test.sh
 TMPDIR=/path/to/isolated-tmp GUARD_TEST_FOCUS=fail2ban bash tests/guard_test.sh
+TMPDIR=/path/to/isolated-tmp GUARD_TEST_FOCUS=workflow bash tests/guard_test.sh
 ```
 
 已有 Ubuntu 24.04 公网登录及只读菜单验证记录；本次立即生效流程使用函数级命令适配器验证，完整 Linux 回归需在可用测试机复跑。真实规则变更、SSH 切换、系统重启及 Enforcing 内核不属于已有实机验证结论。
@@ -118,3 +140,5 @@ TMPDIR=/path/to/isolated-tmp GUARD_TEST_FOCUS=fail2ban bash tests/guard_test.sh
 ## 外部参考
 
 参考 [avsba001/vps-secure](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/vps-secure.sh) 的执行前提示、分步操作和配置备份思路，独立实现立即生效流程。未引入远程自动执行、内核替换、CAKE、MSS、地域/ASN 限制或聚合网段封禁。
+
+参考 [BeacherZ/key.sh](https://github.com/BeacherZ/key.sh/blob/main/key.sh) 的防护功能分组、SSH 端口占用及监听检查、SSH 与 Fail2ban 联动和白名单持久保存思路，独立实现本工具的流程；未导入或执行第三方脚本，也未增加密钥和密码登录管理功能。
