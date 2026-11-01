@@ -503,7 +503,7 @@ fail2ban_ready() {
 fail2ban_sync_ssh() {
  local file=$ROOT/etc/fail2ban/jail.d/server-guard.local
  if [[ ! -f $file ]]; then
-  say 'Tool Fail2ban jail is not configured; SSH ports were not added to other jails.' '尚未配置本工具Fail2ban防护；可用菜单7启用，其他jail请自行检查端口。' warning
+  say 'Tool Fail2ban jail is not configured; enable it from main menu 10. Check other SSH jails separately.' '尚未配置本工具Fail2ban防护；可用主菜单10启用，其他jail请自行检查端口。' warning
   return 0
  fi
  say 'Synchronizing Fail2ban SSH ports.' '正在同步Fail2ban SSH防护端口。'
@@ -514,14 +514,14 @@ fail2ban_sync_ssh() {
  else say 'Fail2ban port configuration saved; protection activation is unchanged.' 'Fail2ban端口已保存，保留原防护启停状态。' warning; fi
 }
 fail2ban_status() {
- if ! has fail2ban-client; then say 'Fail2ban: not installed. Choose 7 to install and enable protection.' 'Fail2ban：未安装，可选择7安装并启用防护。' warning; return 0; fi
+ if ! has fail2ban-client; then say 'Fail2ban: not installed. Use main menu 10 to install and enable protection.' 'Fail2ban：未安装，可在主菜单10安装并启用防护。' warning; return 0; fi
  if ! os systemctl is-active --quiet fail2ban; then say 'Fail2ban: service stopped.' 'Fail2ban：服务未运行。' warning; return 0; fi
  say 'Fail2ban: service active.' 'Fail2ban：服务运行中。' success
  if os fail2ban-client status server-guard-sshd; then
   say 'Tool SSH jail is running.' '本工具 jail 运行中。' success
   local key value
   for key in port maxretry findtime bantime ignoreip; do value=$(fail2ban_value "$key"); ui_printf info '%s = %s\n' "$key" "${value:-inherit}"; done
- else say 'This tool SSH jail is not running. Choose 7 to enable it.' '本工具SSH防护未运行，可选择7启用。' warning; fi
+ else say 'This tool SSH jail is not running. Enable it from main menu 10.' '本工具SSH防护未运行，可在主菜单10启用。' warning; fi
 }
 fail2ban_logs() {
  need journalctl systemd systemd
@@ -693,46 +693,57 @@ menu() {
  while :; do
   if [[ $LANGUAGE == en ]]; then
    ui_printf title '\n=== Server Guard ===\n'
-   ui_printf success '1 Install and enable firewall\n'
-   ui_printf success '19 Start firewall  20 Reload/restart firewall  '; ui_printf warning '10 Stop firewall (keep rules)\n'
-   ui_printf info '2 Ports  '; ui_printf success '3 Add port  4 Edit port  '; ui_printf error '5 Delete port\n'
-   ui_printf success '6 SSH port  7 Install and enable Fail2ban  '; ui_printf warning '8 Disable tool SSH protection\n'
-   ui_printf info '9 Status\n'
-   ui_printf error '11 Clear owned ports  12 Clear all rules\n'
-   ui_printf info '21 Fail2ban protection management\n'
-   ui_printf info '16 Firewall rules  '; ui_printf success '17 Configure Fail2ban  '; ui_printf info '18 List backups\n'
+   ui_printf section '\n[Firewall]\n'
+   ui_printf success ' 1 Install and enable firewall   2 Start firewall\n 3 Restart/reload firewall       '; ui_printf warning '4 Stop firewall (keep rules)\n'
+   ui_printf section '\n[TCP ports]\n'
+   ui_printf info ' 5 View ports  '; ui_printf success '6 Add port\n 7 Edit port   '; ui_printf error '8 Delete port\n'
+   ui_printf section '\n[SSH]\n'
+   ui_printf success ' 9 Change SSH port and synchronize protection\n'
+   ui_printf section '\n[Fail2ban]\n'
+   ui_printf success '10 Install and enable protection  '; ui_printf warning '11 Disable tool SSH protection\n'
+   ui_printf success '12 Protection parameters          '; ui_printf info '13 Protection management\n'
+   ui_printf section '\n[Status and maintenance]\n'
+   ui_printf info '14 View status  15 Complete firewall rules\n16 Backups and results\n'
+   ui_printf section '\n[Rule cleanup]\n'
+   ui_printf error '17 Clear owned ports  18 Clear all supported rules\n'
    ui_printf muted '0 Exit\n'; ui_printf prompt 'Choose: '
   else
    ui_printf title '\n╔══════════ 服务器保护菜单 ══════════╗\n'
-   ui_printf section '\n【防火墙与端口】\n'
-   ui_printf success ' 1 安装并启用防火墙\n'
-   ui_printf success '19 启动防火墙    20 重启/重载防火墙  '; ui_printf warning '10 关闭防火墙（保留规则）\n'
-   ui_printf info ' 2 查看端口       '; ui_printf success '3 添加端口       4 修改端口\n'; ui_printf error ' 5 删除端口\n'
-   ui_printf section '\n【SSH 与防爆破】\n'
-   ui_printf success ' 6 切换 SSH 端口  7 安装并启用 Fail2ban  '; ui_printf warning '8 停用本工具SSH防护\n'
-   ui_printf info '21 Fail2ban防护管理（状态/参数/解封/白名单/日志）\n'
+   ui_printf section '\n【防火墙】\n'
+   ui_printf success ' 1 安装并启用防火墙  2 启动防火墙\n 3 重启/重载防火墙   '; ui_printf warning '4 关闭防火墙（保留规则）\n'
+   ui_printf section '\n【TCP端口管理】\n'
+   ui_printf info ' 5 查看端口         '; ui_printf success '6 添加TCP端口\n 7 修改TCP端口      '; ui_printf error '8 删除TCP端口\n'
+   ui_printf section '\n【SSH】\n'
+   ui_printf success ' 9 修改SSH端口并同步防护\n'
+   ui_printf section '\n【Fail2ban防护】\n'
+   ui_printf success '10 安装并启用SSH防护 '; ui_printf warning '11 停用本工具SSH防护\n'
+   ui_printf success '12 配置防护参数      '; ui_printf info '13 防护管理（状态/解封/白名单/日志）\n'
    ui_printf section '\n【状态与维护】\n'
-   ui_printf info ' 9 查看状态\n'
-   ui_printf error '11 清空自有端口  12 清空全部规则\n'
-   ui_printf info '16 查看完整规则  '; ui_printf success '17 配置防爆破    '; ui_printf info '18 查看备份\n'
+   ui_printf info '14 查看状态         15 查看完整防火墙规则\n16 查看备份与执行结果\n'
+   ui_printf section '\n【规则清理】\n'
+   ui_printf error '17 清空本工具端口   18 清空全部受支持规则\n'
    ui_printf muted ' 0 退出\n'; ui_printf prompt '请选择：'
   fi
   menu_read || return 0
   choice=$REPLY
   case $choice in
    0) return 0;;
-   2) menu_ports || say 'Port lookup failed.' '端口查询失败。' error;;
-   3|5|6)
+   1) menu_change firewall-setup || say 'Action failed.' '操作失败。' error;;
+   2) menu_change firewall-start || say 'Action failed.' '操作失败。' error;;
+   3) menu_change firewall-restart || say 'Action failed.' '操作失败。' error;;
+   4) menu_change firewall-disable || say 'Action failed.' '操作失败。' error;;
+   5) menu_ports || say 'Port lookup failed.' '端口查询失败。' error;;
+   6|8|9)
     menu_ports || true
     if [[ $LANGUAGE == en ]]; then ui_printf prompt 'TCP port (blank cancels): '; else ui_printf prompt 'TCP端口（留空取消）：'; fi
     menu_read || return 0; first=$REPLY
     [[ -n $first ]] || continue
     case $choice in
-     3) menu_change firewall-allow --port "$first" || say 'Action failed.' '操作失败。' error;;
-     5) menu_change firewall-delete --port "$first" || say 'Action failed.' '操作失败。' error;;
-     6) menu_change ssh-port --port "$first" || say 'Action failed.' '操作失败。' error;;
+     6) menu_change firewall-allow --port "$first" || say 'Action failed.' '操作失败。' error;;
+     8) menu_change firewall-delete --port "$first" || say 'Action failed.' '操作失败。' error;;
+     9) menu_change ssh-port --port "$first" || say 'Action failed.' '操作失败。' error;;
     esac;;
-   4)
+   7)
     menu_ports || true
     if [[ $LANGUAGE == en ]]; then ui_printf prompt 'Current port: '; else ui_printf prompt '原端口：'; fi
     menu_read || return 0; first=$REPLY
@@ -741,20 +752,15 @@ menu() {
     menu_read || return 0; second=$REPLY
     [[ -n $second ]] || continue
     menu_change firewall-edit --port "$first" --to-port "$second" || say 'Action failed.' '操作失败。' error;;
-   9) menu_invoke status || say 'Guard status incomplete.' '保护工具状态查询不完整。' warning;;
-   1) menu_change firewall-setup || say 'Action failed.' '操作失败。' error;;
-   7) menu_change fail2ban-enable || say 'Action failed.' '操作失败。' error;;
-   8) menu_change fail2ban-disable || say 'Action failed.' '操作失败。' error;;
-   16) menu_invoke rules || say 'Rule lookup failed.' '规则查询失败。' error;;
-   17) menu_fail2ban_policy || say 'Action failed.' '操作失败。' error;;
-   18) menu_invoke backups || say 'Backup lookup failed.' '备份查询失败。' error;;
-   10) menu_change firewall-disable || say 'Action failed.' '操作失败。' error;;
-   19) menu_change firewall-start || say 'Action failed.' '操作失败。' error;;
-   20) menu_change firewall-restart || say 'Action failed.' '操作失败。' error;;
-   21) menu_fail2ban;;
-   11) menu_change firewall-clear || say 'Action failed.' '操作失败。' error;;
-   12) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。' error;;
-   13|14|15) say 'Restore, confirmation and rollback menus were removed. Changes take effect immediately.' '恢复、确认和回退菜单已取消，成功执行后直接生效。' warning;;
+   10) menu_change fail2ban-enable || say 'Action failed.' '操作失败。' error;;
+   11) menu_change fail2ban-disable || say 'Action failed.' '操作失败。' error;;
+   12) menu_fail2ban_policy || say 'Action failed.' '操作失败。' error;;
+   13) menu_fail2ban;;
+   14) menu_invoke status || say 'Guard status incomplete.' '保护工具状态查询不完整。' warning;;
+   15) menu_invoke rules || say 'Rule lookup failed.' '规则查询失败。' error;;
+   16) menu_invoke backups || say 'Backup lookup failed.' '备份查询失败。' error;;
+   17) menu_change firewall-clear || say 'Action failed.' '操作失败。' error;;
+   18) menu_change firewall-clear --scope all || say 'Action failed.' '操作失败。' error;;
    *) say 'Unknown choice.' '选项无效。' warning;;
   esac
  done

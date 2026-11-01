@@ -111,7 +111,7 @@ reject fail2ban-status --apply
 reject fail2ban-logs --port 22
 ok 'Invalid IPs and mutation options on read-only queries are rejected'
 reset_fixture ufw
-printf '19\nN\n20\nN\n10\nN\n21\n1\n8\n0\n0\n' | run menu > "$work/lifecycle-menu"
+printf '2\nN\n3\nN\n4\nN\n13\n1\n8\n0\n0\n' | run menu > "$work/lifecycle-menu"
 grep -q '关闭防火墙（保留规则）' "$work/lifecycle-menu"
 grep -q 'Fail2ban 防护管理' "$work/lifecycle-menu"
 ! grep -q '^MUTATE' "$GUARD_TEST_ROOT/fixture/log"

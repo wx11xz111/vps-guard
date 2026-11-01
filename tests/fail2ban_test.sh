@@ -33,9 +33,9 @@ for family in ubuntu rocky; do
  run plan fail2ban-enable > "$work/plan"
  [[ ! -e $GUARD_TEST_ROOT/var/lib/server-guard && ! -f $GUARD_TEST_ROOT/fixture/install.log ]]
  reject apply fail2ban-enable
- printf '7\nN\n0\n' | run menu > "$work/cancel"
+ printf '10\nN\n0\n' | run menu > "$work/cancel"
  [[ ! -f $GUARD_TEST_ROOT/fixture/install.log ]]
- printf '7\ny\n0\n' | run menu > "$work/install"
+ printf '10\ny\n0\n' | run menu > "$work/install"
  grep -q '已生效' "$work/install"
  [[ ! -f $GUARD_TEST_ROOT/fixture/missing-fail2ban-client && ! -f $GUARD_TEST_ROOT/fixture/fail2ban-masked ]]
  [[ $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.active") == 1 && $(cat "$GUARD_TEST_ROOT/fixture/services/fail2ban.enabled") == 1 ]]

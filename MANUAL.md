@@ -13,27 +13,33 @@ vps-guard
 
 安装器校验固定提交及 SHA256 后安装脚本，不启用防火墙或修改 SSH 配置。已有旧版时重新执行上述安装命令即可更新。普通用户启动时通过 sudo 提权，保留 SSH_CONNECTION 与 NO_COLOR。
 
-支持 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；不支持 CentOS 7。需要修改防火墙时，还需相应管理器命令及持久化服务；只读查询不要求持久化组件。菜单 1 可安装防火墙，菜单 7/17 可安装 Fail2ban。
+支持 Debian 11+、Ubuntu 22.04+、Rocky/AlmaLinux/RHEL 8+、CentOS Stream 9+；不支持 CentOS 7。需要修改防火墙时，还需相应管理器命令及持久化服务；只读查询不要求持久化组件。菜单 1 可安装防火墙，菜单 10/12 可安装 Fail2ban。
 
 ## 菜单与颜色
 
-| 编号 | 功能 |
-| --- | --- |
-| 1 | 安装并启用防火墙 |
-| 2 / 3 / 4 / 5 | 查看、添加、修改、删除本工具端口 |
-| 6 | 切换 SSH 端口，保留原端口 |
-| 7 / 8 | 安装并启用、停用本工具 Fail2ban jail |
-| 9 | 查看状态 |
-| 10 | 关闭防火墙并禁用开机启动，保留已保存规则 |
-| 11 / 12 | 清空本工具端口、清空受支持的整机规则 |
-| 16 | 查看实际防火墙规则 |
-| 17 | 配置防爆破参数 |
-| 18 | 查看配置备份及执行结果 |
-| 19 / 20 | 启动防火墙、重启/重载防火墙 |
-| 21 | Fail2ban防护管理子菜单 |
-| 0 | 退出 |
+| 分组 | 编号 | 功能 |
+| --- | --- | --- |
+| 防火墙 | 1 | 安装并启用防火墙 |
+| 防火墙 | 2 | 启动防火墙，加载已保存规则 |
+| 防火墙 | 3 | 重启/重载防火墙 |
+| 防火墙 | 4 | 关闭防火墙并禁用开机启动，保留已保存规则 |
+| TCP端口 | 5 | 查看 SSH 保护端口及本工具端口 |
+| TCP端口 | 6 | 添加本工具 TCP 放行端口 |
+| TCP端口 | 7 | 修改本工具 TCP 端口 |
+| TCP端口 | 8 | 删除本工具普通 TCP 端口 |
+| SSH | 9 | 修改 SSH 端口并同步防护，保留原端口 |
+| Fail2ban | 10 | 安装并启用本工具 SSH 防护 |
+| Fail2ban | 11 | 停用本工具 SSH jail |
+| Fail2ban | 12 | 配置防护参数 |
+| Fail2ban | 13 | 进入防护管理子菜单 |
+| 状态与维护 | 14 | 查看状态 |
+| 状态与维护 | 15 | 查看完整防火墙规则 |
+| 状态与维护 | 16 | 查看配置备份及执行结果 |
+| 规则清理 | 17 | 清空本工具端口 |
+| 规则清理 | 18 | 清空受支持的整机规则 |
+| 退出 | 0 | 退出主菜单；子菜单中返回上级 |
 
-原编号 13/14/15 的恢复、确认和回退功能已移除，其他编号保留。操作前仍有 `[y/N]`：Y/y 执行，N/n、回车或输入结束取消；其他输入重新提示。没有执行后的确认步骤。
+恢复、确认和回退功能已移除。本版主菜单按“防火墙 → TCP端口 → SSH → Fail2ban → 状态与维护 → 规则清理”连续编号 1–18，旧版编号不再兼容，请按当前菜单选择。命令行动作名称不变，自动化调用应使用这些名称。操作前仍有 `[y/N]`：Y/y 执行，N/n、回车或输入结束取消；其他输入重新提示。没有执行后的确认步骤。
 
 青蓝色用于标题和查看信息，绿色用于启用及成功状态，黄色用于提醒或执行前确认，红色用于错误、删除和清空，紫色用于输入，灰色用于退出或取消。重定向、管道、TERM=dumb 或非空 NO_COLOR 使用纯文本；错误颜色按 stderr 是否连接终端判断。例如 `NO_COLOR=1 vps-guard`。
 
@@ -73,21 +79,21 @@ sudo --preserve-env=SSH_CONNECTION bash ./server-guard.sh apply fail2ban-whiteli
 
 plan 和 --dry-run 仅预览，不安装、不创建备份、不迁移旧任务。ports 列出 SSH 保护端口及本工具普通 TCP 端口；rules 显示实际管理器规则，包括本工具之外的规则。UFW 同时显示编号规则和 show raw；iptables 输出双栈运行快照；nftables 输出运行规则；firewalld 输出运行与永久区域。
 
-菜单 2 单独显示 UFW 实际 active/inactive 状态，避免把 ufw.service 的活动状态等同于启用过滤。UFW 后端同时通过 systemd 和 ufw status 检测。只读查询不会因为停用 UFW、其他 Fail2ban nft 表或缺少 iptables 持久化组件而单独拒绝。UFW show raw 可能初始化两张没有链或规则的空 ip/ip6 filter 表，不会因此启用 UFW。
+菜单 5 单独显示 UFW 实际 active/inactive 状态，避免把 ufw.service 的活动状态等同于启用过滤。UFW 后端同时通过 systemd 和 ufw status 检测。只读查询不会因为停用 UFW、其他 Fail2ban nft 表或缺少 iptables 持久化组件而单独拒绝。UFW show raw 可能初始化两张没有链或规则的空 ip/ip6 filter 表，不会因此启用 UFW。
 
 ## Fail2ban 安装与配置
 
-菜单 7/17 在缺少客户端时，先预览，输入 Y 后通过系统软件源安装：Debian/Ubuntu 使用 `apt-get update` 和 `apt-get -y install fail2ban python3-systemd`；RHEL 家族使用 `dnf -y install fail2ban-server python3-systemd`。RHEL 系列需预先配置提供软件包的仓库（通常为 EPEL），工具不自动添加仓库。
+菜单 10/12 在缺少客户端时，先预览，输入 Y 后通过系统软件源安装：Debian/Ubuntu 使用 `apt-get update` 和 `apt-get -y install fail2ban python3-systemd`；RHEL 家族使用 `dnf -y install fail2ban-server python3-systemd`。RHEL 系列需预先配置提供软件包的仓库（通常为 EPEL），工具不自动添加仓库。
 
 安装期间临时 mask Fail2ban，防止软件包安装提前启动封禁；尊重管理员已有 mask。完成后校验现有配置，备份、写入本工具 jail、设置开机启动、启动或重新加载服务，并最多等待 10 秒验证 jail 就绪。失败时保留已安装的软件包；仅清理安装阶段的临时 mask，不执行配置回退。
 
 只写 `/etc/fail2ban/jail.d/server-guard.local` 中的 `[server-guard-sshd]`，使用 sshd filter/systemd backend，覆盖识别出的全部 SSH 端口，ignoreip 包含当前管理来源和环回地址，不改写其他 jail。已有其他 jail 无效时需先修复。
 
-菜单 17 回车保留当前值；首次使用为 5 次失败、600 秒统计窗口、3600 秒封禁。--maxretry 范围 1–100，--findtime 为 1–604800 秒，--bantime 为 1–31536000 秒。命令未指定的值保留本工具已有设置，首次启用采用 5/600/3600。停用再启用不会丢失这些参数。
+菜单 12 回车保留当前值；首次使用为 5 次失败、600 秒统计窗口、3600 秒封禁。--maxretry 范围 1–100，--findtime 为 1–604800 秒，--bantime 为 1–31536000 秒。命令未指定的值保留本工具已有设置，首次启用采用 5/600/3600。停用再启用不会丢失这些参数。
 
-菜单 21 集中提供：1 状态及封禁列表、2 安装启用、3 参数、4 停用本工具 jail、5 重启整个 Fail2ban 服务、6 解封 IP、7 添加持久白名单、8 日志、0 返回。查看不要求 SSH_CONNECTION，也不自动安装。白名单仅接受单个 IPv4/IPv6 地址，保留已有白名单及当前管理来源；更新参数、停用和 SSH 端口同步也保留这些地址。启用的 jail 添加白名单时同时解封该地址。解封仅修改运行状态，不加入白名单。
+主菜单 13 进入防护管理，子菜单集中提供：1 状态及封禁列表、2 安装启用、3 参数、4 停用本工具 jail、5 重启整个 Fail2ban 服务、6 解封 IP、7 添加持久白名单、8 日志、0 返回主菜单。子菜单编号与主菜单独立。查看不要求 SSH_CONNECTION，也不自动安装。白名单仅接受单个 IPv4/IPv6 地址，保留已有白名单及当前管理来源；更新参数、停用和 SSH 端口同步也保留这些地址。启用的 jail 添加白名单时同时解封该地址。解封仅修改运行状态，不加入白名单。
 
-启用及同步仅管理 `[server-guard-sshd]`，保留同文件中的其他节及本工具未知设置，不修改其他配置文件。停用本工具 jail 不停止其他 jail。菜单 21 的服务重启会涉及全部 jail，执行前明确提示；不会卸载软件。日志同时显示最近 80 条 systemd 记录及存在时的最近 40 行 `/var/log/fail2ban.log`。
+启用及同步仅管理 `[server-guard-sshd]`，保留同文件中的其他节及本工具未知设置，不修改其他配置文件。停用本工具 jail 不停止其他 jail。主菜单 13 下的服务重启会涉及全部 jail，执行前明确提示；不会卸载软件。日志同时显示最近 80 条 systemd 记录及存在时的最近 40 行 `/var/log/fail2ban.log`。
 
 启用 Fail2ban 不要求先启用 UFW/firewalld。jail 启动与实际封禁效果需要分别验证，后者取决于系统可用的 banaction 和过滤规则。包信息见 [Ubuntu](https://packages.ubuntu.com/noble/fail2ban)、[EPEL](https://packages.fedoraproject.org/pkgs/fail2ban/fail2ban-server/epel-9.html)。
 
@@ -104,13 +110,13 @@ plan 和 --dry-run 仅预览，不安装、不创建备份、不迁移旧任务�
 
 UFW/iptables 同样允许默认名称为 `inet f2b-table` 的独立 Fail2ban 表；不会操作该表。其他未知 nft 表仍拒绝写入。nftables 更新仅替换 `inet filter`，不再全局 flush ruleset。独立 nftables 服务停止可能全局清空规则；存在独立 Fail2ban 表时，工具拒绝该停止操作，避免破坏封禁。
 
-菜单 10 关闭过滤并禁用开机启动，保存端口配置和备份；19 从已保存规则启动，先补齐全部已识别 SSH 端口；20 重新加载规则。UFW 使用 reload，firewalld 使用 firewall-cmd --reload，因此 firewalld 未保存的临时业务规则不会保留；预览会提示加载已保存规则。原清空规则语义仅保留在 11/12。工具记录最近管理器，停用后不会把 UFW 错认成裸 iptables。管理员 mask 的服务不会被自动解除。
+主菜单 4 关闭过滤并禁用开机启动，保存端口配置和备份；2 从已保存规则启动，先补齐全部已识别 SSH 端口；3 重新加载规则。UFW 使用 reload，firewalld 使用 firewall-cmd --reload，因此 firewalld 未保存的临时业务规则不会保留；预览会提示加载已保存规则。清空规则使用独立的主菜单 17/18。工具记录最近管理器，停用后不会把 UFW 错认成裸 iptables。管理员 mask 的服务不会被自动解除。
 
 SSH 保护端口取当前 SSH_CONNECTION、sshd -T、ss -ltnp 实际 sshd 监听端口和请求新端口的并集；不能识别时拒绝，环境丢失不会猜测 22。禁止修改或删除 SSH 保护端口。旧 SSH 端口保留，工具不默认关闭密码或 root 登录。
 
 检测到 ssh.socket/sshd.socket 激活时，预检要求对应 SSH 服务未被 mask、KillMode=process 且 SendSIGHUP=no；不满足时提前拒绝。预览明确说明将切换为服务监听。在配置校验及防火墙放行之后，停用 socket 的开机启动并停止它，启用及重启对应 SSH 服务，再检查新端口监听。不会永久 mask socket，也不自动解除管理员已有 mask。会话保留依据 systemd 的进程管理设置，真实切换仍需实机验收。
 
-SSH 改端口先拒绝其他进程占用的 TCP 端口，生成并校验候选配置，再准备 SELinux 授权和防火墙放行。写入后重载 SSH，最多等待 5 秒核对新端口确实由 sshd 监听，随后更新本工具 Fail2ban 的端口列表并校验配置；服务及 jail 已启用时重新加载本工具 jail 并检查就绪。服务停止或 jail 停用时只保存新端口，不自动启用。未配置本工具 jail 时提示使用菜单 7，外部 sshd jail 仍由管理员管理。监听失败或防护同步失败都会报告失败，保留原 SSH 端口及当前结果和备份，不自动回退。
+SSH 改端口先拒绝其他进程占用的 TCP 端口，生成并校验候选配置，再准备 SELinux 授权和防火墙放行。写入后重载 SSH，最多等待 5 秒核对新端口确实由 sshd 监听，随后更新本工具 Fail2ban 的端口列表并校验配置；服务及 jail 已启用时重新加载本工具 jail 并检查就绪。服务停止或 jail 停用时只保存新端口，不自动启用。未配置本工具 jail 时提示使用主菜单 10，外部 sshd jail 仍由管理员管理。监听失败或防护同步失败都会报告失败，保留原 SSH 端口及当前结果和备份，不自动回退。
 
 菜单 1 是首次安装/启用准备入口，不创建编号备份；根据发行版安装 UFW/firewalld，先准备全部识别出的 SSH 放行，再启用并验证。已有其他管理器或不支持的过滤规则时拒绝安装。其他业务端口需单独放行，云安全组由管理员维护。
 
