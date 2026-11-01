@@ -110,9 +110,3 @@ NO_COLOR=1 vps-guard
 已完成 Bash 语法检查、Windows Git Bash 下的隔离函数级命令适配器回归，以及安装器下载和 SHA256 校验。另有 Ubuntu 24.04 公网环境的历史 SSH 登录、只读查询和菜单验证记录。
 
 当前流程的完整 Linux 回归、真实防火墙变更、SSH/socket 切换、系统重启及 SELinux 内核行为仍需实机验收，隔离检查不代表这些场景已经通过。
-
-## 来源与许可
-
-本工具来自 VPS Manager 的独立服务器加固模块，采用 [GPL-3.0](LICENSE)。
-
-流程设计参考 [avsba001/vps-secure](https://github.com/avsba001/vps-secure) 的分步执行与备份思路，以及 [BeacherZ/key.sh](https://github.com/BeacherZ/key.sh) 的防护管理分组、SSH 端口检查与 Fail2ban 联动思路，采用独立实现。

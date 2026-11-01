@@ -142,9 +142,3 @@ TMPDIR=/path/to/isolated-tmp GUARD_TEST_FOCUS=workflow bash tests/guard_test.sh
 ```
 
 已有 Ubuntu 24.04 公网登录及只读菜单验证记录；本次立即生效流程使用函数级命令适配器验证，完整 Linux 回归需在可用测试机复跑。真实规则变更、SSH 切换、系统重启及 Enforcing 内核不属于已有实机验证结论。
-
-## 外部参考
-
-参考 [avsba001/vps-secure](https://raw.githubusercontent.com/avsba001/vps-secure/refs/heads/main/vps-secure.sh) 的执行前提示、分步操作和配置备份思路，独立实现立即生效流程。未引入远程自动执行、内核替换、CAKE、MSS、地域/ASN 限制或聚合网段封禁。
-
-参考 [BeacherZ/key.sh](https://github.com/BeacherZ/key.sh/blob/main/key.sh) 的防护功能分组、SSH 端口占用及监听检查、SSH 与 Fail2ban 联动和白名单持久保存思路，独立实现本工具的流程；未导入或执行第三方脚本，也未增加密钥和密码登录管理功能。
